@@ -1,6 +1,6 @@
 # make usage
 
-## 编译内核
+## 编译内核模块（驱动文件）
 1. `Makefile` 文件内容：
 ```Makefile
 # 指定 Linux 源码路径
@@ -8,6 +8,9 @@
 KERN_DIR = /home/melodic/alientek/Linux-src/src/
 ## x86-64
 # KERN_DIR = /lib/modules/5.15.0-130-generic/build
+# KERN_DIR = /lib/modules/$(shell uname -r)/build
+
+# PWD:=(shell pwd)
 
 all:
 # -C $(KERN_DIR): 切换到内核源码目录；内核模块的编译依赖于内核源码
@@ -17,12 +20,14 @@ all:
 # 该值后，编译驱动模块使用的编译器即 ${CROSS_COMPILE}-gcc
 # 下述命令会执行 obj-m 中的内容
 	make -C $(KERN_DIR) M=`pwd` modules
+# make -C $(KERN_DIR) M=$(PWD) modules
 	$(CROSS_COMPILE)gcc -o hello_drv_test hello_drv_test.c
 
 clean:
 	make -C $(KERN_DIR) M=`pwd` modules clean
 	rm -rf modules.order
 	rm -f  hello_drv_test
+# rm -f *.ko *.o *.symvers *.cmd *cmd.o modules.* *.mod.c
 
 # 指定需要编译的内核模块对象文件，追加内容 +=
 obj-m += hello_drv.o
