@@ -82,6 +82,85 @@
   - 电源部分的电容，用于提供供电电源的稳定；
 
 ## 裸机编程实操
+### 开发方式
+- 基于寄存器：直接操作寄存器；
+- 基于函数库：使用 `ST` 官方提供的封装好的函数库，间接配置寄存器；
+- 基于 `HAL` 库：图形化界面快速配置 `STM32`；
+
+### 基于函数库的 STM32 开发
+- 固件库 - `STM32F10x_StdPeriph_lib`
+  - `Libraries`：库
+    - `CMSIS`
+    - `STM32F10x_StdPeriph_Driver`
+  - `Project`：官方示例和模板；
+  - `Utilies`：官方评估板的相关例程；
+  - `Release_Notes`：发布文档，含版本说明等；
+  - `stm32f10x_stdperiph_lib_um`：使用手册，含库函数使用说明等；
+- `Keil` 新建工程（空）：
+  - `New Project -> New uVision Project -> 选择本工程对应的文件夹 + 命名工程名 -> 选择器件型号 -> 跳过新建工程助手`；
+  - 启动相关文件：
+    - 启动文件（`固件库/Libraries/CMSIS/DeviceSupport/ST/STM32F10x/startup/arm/*`）：
+    - `STM32` 的外设寄存器描述文件（`固件库/Libraries/CMSIS/DeviceSupport/ST/STM32F10x/stm32f10x.h`）和其他文件（主要用来配置系统时钟：`system_stm32f10x.c` 和 `system_stm32f10x.h`）；
+    - 内核寄存器描述文件（`固件库/Libraries/CMSIS/CM3/CoreSupport/core_cm3.c 和 core_cm3.h`）；
+  - 复制上述所有文件到新建工程中：新建文件夹 `Start`；
+  - 在工程中新建目录（组） `Start`，添加启动文件工程中。其中，启动文件选择后缀为 `_md.s` 的文件（需要根据芯片型号(`Flash` 容量)来选择，`md` 表示中等容量），其余的 `.c` 和 `.h` 均添加进来：
+    ![](../../img/STM32/251027-222150.png)
+  - 添加相关文件的包含路径：`魔术棒 -> C/C++ -> Include Paths`；
+  - 在工程文件夹下新建 `User`，项目入口 `main` （`main.c`）放到该位置，并在 `Keil` 工程做相应操作；
+  - `main`：
+    ```c
+    #include "stm32f10x.h"
+
+    int main(void){
+      RCC->APB2ENR = 0x00000010;  // 使能时钟
+      GPIOC->CRH = 0x00300000;    // GPIO 设置，电气属性、方向
+      GPIOC->ODR = 0x00002000;    // 写数据，输出寄存器
+      while (1) {
+
+      }
+    }
+
+    ```
+  - 调试器选择：`魔术棒 -> Debug -> Use 选择 ST-Link Debugger`，并点击 `Settings`，在 `Flash Download` 中勾选 `Reset and Run`（下载程序后会立马复位并执行）；
+  - 添加其他函数，新建 `Library` 文件夹（本地目录和工程目录），添加固件库中的 `.../Libraries/STM3210x_StdPeriph_Driver/src/*`，其中 `misc.c`（混杂）为内核库函数，其他为内核外的库函数；同理，将与 `src` 同级的 `inc/*` 复制到工程中；
+  - 添加 `.../Project/STM32F10x_StdPeriph_Template` 下的 `stm32f10x_conf.h`（用来配置库函数头文件的包含关系，以及用来参数检查的函数定义，所有库函数都需要）、`stm32f10x_it.c` 和 `stm32f10x_it.h`（中断相关）到 `User` 目录下；
+  - 添加宏定义以包含标准外设库，在 `魔术棒 -> C/C++ -> Define` 中添加 `USE_STDPERIPH_DRIVER`（与 `stm32f10x.h` 中的条件编译相关）；
+  - 完善头文件包含路径；
+  ```c
+  #include "stm32f10x.h"
+
+  int main(void){
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+    GPIO_InitTypeDef GPIO_InitStructure;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;    // 推挽输出
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_13;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOC, &GPIO_InitStructure);
+    // GPIO_SetBits(GPIOC, GPIO_Pin_13);
+    GPIO_ResetBis(GPIOC, GPIO_Pin_13);
+    while (1) {
+
+    }
+  }
+
+  ```
+  - 其他设置：右上角扳手图标；
+- 工程架构
+  ![](../../img/STM32/251027-222716.png)
+  - `startup_xxx.s`：
+    ```asm
+    Reset_Handler   PROC
+                    EXPORT    Reset_Handler     [WEAK]
+          IMPORT  _main
+          IMPORT  SystemInit
+                    LDR   R0, =SystemInit
+                    BLX   R0
+                    LDR   R0, =_main
+                    BX    R0
+                    ENDP
+    ```
+    - `SystemInit` -> `system_xx.c/.h`，Setup the microcontroller system, Initialize the Embedded Flash Interface, the PLL and update the SystemCoreClock variable；
+  - 在 `stm32f10x.h` 在对 `stm32f10x_conf.h` 进行条件编译；
 
 ## 参考
 - [江科大视频](https://www.bilibili.com/video/BV1th411z7sn?spm_id_from=333.788.videopod.episodes&vd_source=f87b1dc9ce95722a192942b341ae04d2&p=2)
