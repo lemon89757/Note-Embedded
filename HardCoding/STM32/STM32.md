@@ -88,6 +88,9 @@
 - 基于 `HAL` 库：图形化界面快速配置 `STM32`；
 
 ### 基于函数库的 STM32 开发
+- 参考库函数用户手册或下述使用手册；
+- 数据类型：
+  ![](../../img/STM32/251101-214747.png)
 - 固件库 - `STM32F10x_StdPeriph_lib`
   - `Libraries`：库
     - `CMSIS`
@@ -123,7 +126,7 @@
     ```
   - 调试器选择：`魔术棒 -> Debug -> Use 选择 ST-Link Debugger`，并点击 `Settings`，在 `Flash Download` 中勾选 `Reset and Run`（下载程序后会立马复位并执行）；
   - 添加其他函数，新建 `Library` 文件夹（本地目录和工程目录），添加固件库中的 `.../Libraries/STM3210x_StdPeriph_Driver/src/*`，其中 `misc.c`（混杂）为内核库函数，其他为内核外的库函数；同理，将与 `src` 同级的 `inc/*` 复制到工程中；
-  - 添加 `.../Project/STM32F10x_StdPeriph_Template` 下的 `stm32f10x_conf.h`（用来配置库函数头文件的包含关系，以及用来参数检查的函数定义，所有库函数都需要）、`stm32f10x_it.c` 和 `stm32f10x_it.h`（中断相关）到 `User` 目录下；
+  - 添加 `.../Project/STM32F10x_StdPeriph_Template` 下的 `stm32f10x_conf.h`（用来配置库函数头文件的包含关系，以及用来参数检查的函数定义，所有库函数都需要）、`stm32f10x_it.c` 和 `stm32f10x_it.h`（中断相关）（`main.c` 也可同时复制，这样上述的 `main.c` 就不用创建了）到 `User` 目录下；
   - 添加宏定义以包含标准外设库，在 `魔术棒 -> C/C++ -> Define` 中添加 `USE_STDPERIPH_DRIVER`（与 `stm32f10x.h` 中的条件编译相关）；
   - 完善头文件包含路径；
   ```c
@@ -161,6 +164,38 @@
     ```
     - `SystemInit` -> `system_xx.c/.h`，Setup the microcontroller system, Initialize the Embedded Flash Interface, the PLL and update the SystemCoreClock variable；
   - 在 `stm32f10x.h` 在对 `stm32f10x_conf.h` 进行条件编译；
+- 中间文件的删除 `keilkill`
+  ```bat
+  del *.bak /s
+  del *.ddk /s
+  del *.edk /s
+  del *.lst /s
+  del *.lnp /s
+  del *.mpf /s
+  del *.mpj /s
+  del *.obj /s
+  del *.omf /s
+  ::del *.opt /s  ::不允许删除JLINK的设置
+  del *.plg /s
+  del *.rpt /s
+  del *.tmp /s
+  del *.__i /s
+  del *.crf /s
+  del *.o /s
+  del *.d /s
+  del *.axf /s
+  del *.tra /s
+  del *.dep /s           
+  del JLinkLog.txt /s
+
+  del *.iex /s
+  del *.htm /s
+  del *.sct /s
+  del *.map /s
+  exit
+  ```
+- `Keil` 快捷方式
+  - `ctrl + alt + space`：代码提示；
 
 ### GPIO 部分
 - GPIO, General Purpose Input Output，通用输入输出口；
@@ -210,6 +245,337 @@
 - GPIO 输出速度，限制输出引脚的最大翻转速度，主要为了低功耗和稳定性；
 - 可以使用同时具有位设置和位清除功能的寄存器，以保证信号的同步性；
 - 很多单片机都使用**高电平弱驱动、低电平强驱动**的规则；
+- 编程：
+  - `stm32f10x_rcc.h/c`： `rcc` 相关函数；
+  - `stm32f10x_gpio.h/c`： `gpio` 相关函数；
+  - `GPIO` 输出——`LED` 闪烁、`LED` 流水灯和蜂鸣器
+    - `System` 文件夹存放延时相关函数`Delay.c/h`，同时添加相关头文件路径；`todo`：延时函数解析
+    - 闪烁
+      ```c
+      #include "stm32f10x.h"
+      #include "Delay.h"
+
+      int main(void) {
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
+
+        GPIO_InitTypeDef GPIO_InitStructure;
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;  // 推挽输出
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+        GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+        while (1) {
+          GPIO_ResetBits(GPIOA, GPIO_Pin_0);
+          Delay_ms(500);
+          GPIO_SetBits(GPIOA, GPIO_Pin_0);
+          Delay_ms(500);
+
+          GPIO_WriteBit(GPIOA, GPIO_Pin_0, Bit_RESET);
+          Delay_ms(500);
+          GPIO_WriteBit(GPIOA, GPIO_Pin_0, Bit_SET);
+          Delay_ms(500);
+
+          GPIO_WriteBit(GPIOA, GPIO_Pin_0, (BitAction)0);
+          Delay_ms(500);
+          GPIO_WriteBit(GPIOA, GPIO_Pin_0, (BitAction)1);
+          Delay_ms(500);
+        }
+      }
+      ```
+      - 推挽模式下，二极管在低电平点亮和高电平点亮下都能正常闪烁；
+      - 开漏模式下，二极管在高电平点亮下不能闪烁（开漏输出模式在高电平下没有驱动能力），低电平下可闪烁；
+    - 流水灯
+      ```c
+      #include "stm32f10x.h"
+      #include "Delay.h"
+
+      int main(void) {
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
+
+        GPIO_InitTypeDef GPIO_InitStructure;
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_All;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+        GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+        while (1) {
+          GPIO_Write(GPIOA, ~0x0001);     // 0000 0000 0000 0001
+          Delay_ms(500);
+          GPIO_Write(GPIOA, ~0x0002);     // 0000 0000 0000 0010
+          Delay_ms(500);
+          GPIO_Write(GPIOA, ~0x0004);     // 0000 0000 0000 0100
+          Delay_ms(500);
+          GPIO_Write(GPIOA, ~0x0008);     // 0000 0000 0000 1000
+          Delay_ms(500);
+          GPIO_Write(GPIOA, ~0x0010);     // 0000 0000 0001 0000
+          Delay_ms(500);
+          GPIO_Write(GPIOA, ~0x0020);     // 0000 0000 0010 0000
+          Delay_ms(500);
+          GPIO_Write(GPIOA, ~0x0040);     // 0000 0000 0100 0000
+          Delay_ms(500);
+          GPIO_Write(GPIOA, ~0x0080);     // 0000 0000 1000 0000
+          Delay_ms(500);
+        }
+      }
+      ```
+    - 蜂鸣器
+      ```c
+      #include "stm32f10x.h"
+      #include "Delay.h"
+
+      int main(void) {
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+
+        GPIO_InitTypeDef GPIO_InitStructure;
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;  // 推挽输出
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_12;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+        GPIO_Init(GPIOB, &GPIO_InitStructure);
+
+        while (1) {
+          GPIO_ResetBits(GPIOB, GPIO_Pin_12);
+          Delay_ms(100);
+          GPIO_SetBits(GPIOB, GPIO_Pin_12);
+          Delay_ms(100);
+          GPIO_ResetBits(GPIOB, GPIO_Pin_12);
+          Delay_ms(100);
+          GPIO_SetBits(GPIOB, GPIO_Pin_12);
+          Delay_ms(700);
+        }
+      }
+      ```
+  - `GPIO` 输入——按键控制 `LED` 和光敏传感器控制蜂鸣器
+    - 按键抖动
+      ![](../../img/STM32/251101-213215.png)
+    - 增加 `Hardware` 文件夹用于存放硬件驱动相关代码，以及相关头文件路径的包含；
+    - `LED.c/h`：
+      ```c
+      /*
+       * LED.h
+       */
+      #ifndef __LED_H
+      #define __LED_H
+
+      void LED_Init(void);
+      void LED1_ON(void);
+      void LED1_OFF(void);
+      void LED2_ON(void);
+      void LED2_OFF(void);
+      void LED1_Turn(void);
+      void LED2_Turn(void);
+
+      #endif
+
+      /*
+       * LED.c
+       */
+       #include "stm32f10x.h"
+
+       void LED_Init(void) {
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
+
+        GPIO_InitTypeDef GPIO_InitStructure;
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_1 | GPIO_Pin_2;
+        GPIO_InitSturcture.GPIO_Speed = GPIO_Speed_50MHz;
+        
+        GPIO_Init(GPIOA, &GPIO_InitStructure);
+        GPIO_SetBits(GPIOA, GPIO_Pin_1 | GPIO_Pin_2);
+       }
+
+       void LED1_ON(void) {
+        GPIO_ResetBits(GPIOA, GPIO_Pin_1);
+       }
+
+       void LED1_OFF(void) {
+        GPIO_SetBits(GPIOA, GPIO_Pin_1);
+       }
+
+       void LED1_Turn(void) {
+        if (GPIO_ReadOutputDataBit(GPIOA, GPIO_Pin_1) == 0) {
+          GPIO_SetBits(GPIOA, GPIO_Pin_1);
+        }else {
+          GPIO_ResetBits(GPIOA, GPIO_Pin_1);
+        }
+       }
+
+       void LED2_ON(void) {
+        GPIO_ResetBits(GPIOA, GPIO_Pin_2);
+       }
+
+       void LED2_OFF(void) {
+        GPIO_SetBits(GPIOA, GPIO_Pin_2);
+       }
+
+       void LED2_Turn(void) {
+        if (GPIO_ReadOutputDataBit(GPIOA, GPIO_Pin_2) == 0) {
+          GPIO_SetBits(GPIOA, GPIO_Pin_2);
+        }else {
+          GPIO_ResetBits(GPIOA, GPIO_Pin_2);
+        }
+       }
+      ```
+    - `Key.c/h`
+      ```c
+      /*
+       * Key.h
+       */
+      #ifndef __KEY_H_
+      #define __KEY_H_
+      
+      void Key_Init(void);
+      uint8_t Key_GetNum(void);
+
+      #endif // !__KEY_H_
+
+      /*
+       * Key.c
+       */
+      #include "stm32f10x.h"
+      #include "Delay.h"
+
+      void Key_Init(void) {
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+
+        GPIO_InitTypeDef GPIO_InitStructure;
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;   // 上拉输入
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_1 | GPIO_Pin_11;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;   // 输入模式下无效果
+
+        GPIO_Init(GPIOB, &GPIO_InitStructure);
+      }
+
+      uint8_t Key_GetNum(void) {
+        uint8_t KeyNum = 0;
+        if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == 0) {
+          Delay_ms(20);
+          while (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == 0);
+          Delay_ms(20);
+          KeyNum = 1;
+        }
+        if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_11) == 0) {
+          Delay_ms(20);
+          while(GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_11) == 0);
+          Delay_ms(20);
+          KeyNum = 2;
+        }
+
+        return KeyNum;
+      }
+      ```
+    - `Buzzer.c/h`
+      ```c
+      /*
+       * Buzzer.h
+       */
+       #ifndef __BUZZER_H
+       #define __BUZZER_H
+
+       void Buzzer_Init(void);
+       void Buzzer_ON(void);
+       void Buzzer_OFF(void);
+       void Buzzer_TURN(void);
+
+       #endif // !__BUZZER_H
+      /*
+       * Buzzer.c
+       */
+       #include "stm32f10x.h"
+
+       void Buzzer_Init(void) {
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+
+        GPIO_InitTypeDef GPIO_InitStructure;
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_12;
+        GPIO_InitSturcture.GPIO_Speed = GPIO_Speed_50MHz;
+        
+        GPIO_Init(GPIOB, &GPIO_InitStructure);
+        GPIO_SetBits(GPIOB, GPIO_Pin_12);
+       }
+
+       void Buzzer_ON(void) {
+        GPIO_ResetBits(GPIOB, GPIO_Pin_12);
+       }
+
+       void Buzzer_OFF(void) {
+        GPIO_SetBits(GPIOB, GPIO_Pin_12);
+       }
+
+       void Buzzer_Turn(void) {
+        if (GPIO_ReadOutputDataBit(GPIOB, GPIO_Pin_12) == 0) {
+          GPIO_SetBits(GPIOB, GPIO_Pin_12);
+        }else {
+          GPIO_ResetBits(GPIOB, GPIO_Pin_12);
+        }
+       }
+      ```
+    - `LightSensor`
+      ```c
+      /*
+       * LightSensor.h
+       */
+       #ifndef __LIGHTSENSOR_H_
+       #define __LIGHTSENSOR_H_
+
+       void LightSensor_Init(void);
+       uint8_t LightSensor_Get(void);
+
+       #endif // !__LIGHTSENSOR_H_
+      /*
+       * LightSensor.c
+       */
+       #include "stm32f10x.h"
+
+       void LightSensor_Init(void) {
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+
+        GPIO_InitTypeDef GPIO_InitStructure;
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_IPU;
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_13;
+        GPIO_InitSturcture.GPIO_Speed = GPIO_Speed_50MHz;
+        
+        GPIO_Init(GPIOB, &GPIO_InitStructure);
+       }
+
+       uint8_t LightSensor_Get(void) {
+        return GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_13);
+       }
+      ```
+    - `main.c`
+      ```c
+      #include "stm32f10x.h"
+      #include "Delay.h"
+      #include "LED.h"
+      #include "Key.h"
+      #include "Buzzer.h"
+      #include "LightSensor.h"
+
+      uint8_t KeyNum;
+
+      int main(void) {
+        LED_Init();
+        Key_Init();
+        Buzzer_Init();
+        LightSensor_Init();
+
+        while (1) {
+          KeyNum = Key_GetNum();
+          if (KeyNum == 1) {
+            LED1_Turn();
+          }
+          if (KeyNum == 2) {
+            LED2_Turn();
+          }
+
+          if (LightSensor_Get() == 1) {
+            Buzzer_ON();
+          } else {
+            Buzzer_OFF();
+          }
+        }
+      }
+      ```
 
 ## todo
 - 位寻址、寻址方式
