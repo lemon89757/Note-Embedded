@@ -661,6 +661,209 @@
     ![](../../img/STM32/251103-232041.png)
   - EXTI 内部框图
     ![](../../img/STM32/251103-232117.png)
+- 编程：
+  - 配置外部中断步骤：
+    1. 配置 `RCC`，将所涉及到的外设的时钟都打开（不打开时钟外设无法工作；`EXTI` 和 `NVIC` 的时钟一直都是打开着的，`NVIC` 作为内核外设无需开启时钟；`RCC` 用于管理内核外外设）；
+    2. 配置 `GPIO`，选择所用端口为输入模式；
+    3. 配置 `AFIO`，选择对应的 `GPIO` 以连接到 `EXTI`；
+    4. 配置 `EXTI`，选择触发方式（上升沿、下降沿或双边沿）以及触发响应方式（中断响应或事件响应）；
+    5. 配置 `NVIC`，给所选中断设置优先级；
+  - 红外传感器计数：
+    ```c
+    /*
+    * CountSensor.h
+    */
+    #ifndef __COUNTERSENSOR_H
+    #define __COUNTERSENSOR_H
+
+    void CounterSensor_Init(void);
+    uint16_t CounterSensor_Get(void);
+
+    #endif // __COUNTERSENSOR_H
+
+    /*
+    * CountSensor.c
+    */
+    #include "stm32f10x.h"
+
+    uint16_t CounterSensor_Count = 0;
+
+    void CountSensor_Init(void) {
+      // 开启 GPIO 和 AFIO 时钟
+      RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+      RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE);
+
+      // 初始化 GPIO
+      GPIO_InitTypeDef GPIO_InitStructure;
+      GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;   // 上拉输入，推荐详细信息可见数据手册 GPIO 章节
+      GPIO_InitStructure.GPIO_Pin = GPIO_Pin_14;
+      GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+      GPIO_Init(GPIOB, &GPIO_InitStructure);
+
+      // 配置 AFIO
+      // 将 EXTI 的 14 号中断通道接到 GPIOB 的 14 号引脚上
+      GPIO_EXTILineConfig(GPIO_PortSourceGPIOB, GPIO_PinSource14);
+      
+      // 配置 EXTI
+      EXTI_InitTypeDef EXTI_InitStructure;
+      EXTI_InitStructure.EXTI_Line = EXTI_Line14;    // 中断线选择
+      EXTI_InitStructure.EXTI_LineCmd = ENABLE;   // 使能或失能
+      EXTI_InitStructure.EXTI_Mode = EXTI_Mode_Interrupt;    // 中断或事件
+      EXTI_InitStructure.EXTI_Trigger = EXTI_Trigger_Falling;
+      EXTI_Init(&EXTI_InitStructure);
+
+      // 配置 NVIC，位于 misc.h
+      NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2); // 设置 2 位抢占，2 位响应，注意该分组信息应当整个芯片都为同一种，因此可以考虑将此设置放置在其他更加合理的位置；
+      NVIC_InitTypeDef NVIC_InitStructure;
+      NVIC_InitStructure.NVIC_IRQChannel = EXTI15_10_IRQn;
+      NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+      NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 1; // 抢占优先级
+      NVIC_IRQChannelSubPriority = 1; // 响应优先级
+      NVIC_Init(&NVIC_InitStructure);
+    }
+
+    // 定义中断服务例程
+    // 函数名为启动文件中中断向量表里对应的函数名
+    // 函数无参无返回值
+    void EXTI15_10_IRQHandler(void) {
+      // 进行中断标志位判断
+      if (EXTI_GetITStatus(EXTI_Line14) == SET) {
+        // 中断处理
+        CounterSensor_Count++;
+        // 清除中断标志位
+        EXTI_ClearITPendingBit(EXTI_Line14);
+      }
+    }
+
+    uint16_t CounterSensor_Get(void) {
+      return CounterSensor_Count;
+    }
+
+    /*
+    * main.c
+    */
+    #include "stm32f10x.h"
+    #include "Delay.h"
+    #include "OLED.h"
+    #include "CountSensor.h"
+
+    int main(void) {
+      OLED_Init();
+      CounterSensor_Init();
+
+      OLED_ShowString(1, 1, "Count:")；
+
+      while (1) {
+        OLED_ShowNum(1, 7, CountSensor_Get(), 5);
+      }
+    }
+    ```
+  - 旋转编码器计数
+    ```c
+    /*
+     * Encoder.h
+     */
+     #ifndef __ENCODER_H
+     #define __ENCODER_H
+
+     void Encoder_Init(void);
+     int16_t Encoder_Get(void);
+
+     #endif // !__ENCODER_H
+    /*
+     * Encoder.c
+     */
+     #include "stm32f10x.h"
+
+     int16_t Encoder_Count = 0;
+
+     void Encoder_Init(void) {
+      // 开启 GPIO 和 AFIO 时钟
+      RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+      RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE);
+
+      // 初始化 GPIO
+      GPIO_InitTypeDef GPIO_InitStructure;
+      GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;   // 上拉输入，推荐详细信息可见数据手册 GPIO 章节
+      GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1;
+      GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+      GPIO_Init(GPIOB, &GPIO_InitStructure);
+
+      // 配置 AFIO
+      GPIO_EXTILineConfig(GPIO_PortSourceGPIOB, GPIO_PinSource0);
+      GPIO_EXTILineConfig(GPIO_PortSourceGPIOB, GPIO_PinSource1);
+      
+      // 配置 EXTI
+      EXTI_InitTypeDef EXTI_InitStructure;
+      EXTI_InitStructure.EXTI_Line = EXTI_Line0 | EXTI_Line1;    // 中断线选择
+      EXTI_InitStructure.EXTI_LineCmd = ENABLE;   // 使能或失能
+      EXTI_InitStructure.EXTI_Mode = EXTI_Mode_Interrupt;    // 中断或事件
+      EXTI_InitStructure.EXTI_Trigger = EXTI_Trigger_Falling;
+      EXTI_Init(&EXTI_InitStructure);
+
+      // 配置 NVIC，位于 misc.h
+      NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2); // 设置 2 位抢占，2 位响应，注意该分组信息应当整个芯片都为同一种，因此可以考虑将此设置放置在其他更加合理的位置；
+      NVIC_InitTypeDef NVIC_InitStructure;
+      NVIC_InitStructure.NVIC_IRQChannel = EXTI0_IRQn;
+      NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+      NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 1; // 抢占优先级
+      NVIC_IRQChannelSubPriority = 1; // 响应优先级
+      NVIC_Init(&NVIC_InitStructure);
+
+      NVIC_InitStructure.NVIC_IRQChannel = EXTI1_IRQn;
+      NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+      NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 1; // 抢占优先级
+      NVIC_IRQChannelSubPriority = 2; // 响应优先级
+      NVIC_Init(&NVIC_InitStructure);
+     }
+
+     void EXTI0_IRQHanlder(void) {
+      if (EXTI_GetITStatus(EXTI_Line0) == SET) {
+        if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == 0) {
+          Encoder_Count--;
+        }
+        EXTI_ClearITPendingBit(EXTI_Line0);
+      }
+     }
+
+     void EXTI1_IRQHanlder(void) {
+      if (EXTI_GetITStatus(EXTI_Line1) == SET) {
+        if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_0) == 0) {
+          Encoder_Count++;
+        }
+        EXTI_ClearITPendingBit(EXTI_Line1);
+      }
+     }
+
+     int16_t Encoder_Get(void) {
+      int16_t temp = Encoder_Count;
+      Encoder_Count = 0
+      return temp;
+     }
+
+    /*
+     * main.c
+     */
+     #include "stm32f10x.h"
+     #include "OLED.h"
+     #include "Delay.h"
+     #include "Encoder.h"
+
+     int16_t Num = 0;
+
+     void main(void) {
+      OLED_Init();
+      Encoder_Init();
+
+      OLED_ShowString(1, 1, "Num:");
+
+      while (1) {
+        Num += Encoder_Get();
+        OLED_ShowSignedNum(1, 5, Num, 5);
+      }
+     }
+    ```
+
 
 #### 定时器中断
 - 读取按键值可以通过定时器中断方式，以方便地进行消抖操作；
