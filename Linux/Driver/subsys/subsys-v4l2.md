@@ -1198,6 +1198,226 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
    - 流控制：实现 `s_stream` 回调，在开启流时启动传感器，**关闭时进入低功耗模式**；
    - 调试：使用 `media-ctl`、`v4l2-ctl` 工具验证拓扑与格式设置，通过 `i2c-tools` 直接读写寄存器进行硬件调试；
 
+### MIPI CSI-2
+1. 概述
+   `MIPI CSI-2, Camera Serial Interface 2` 是移动产业处理器接口联盟定义的摄像头串口接口标准，广泛应用于嵌入式图像采集系统。它采用差分信号传输，支持高速数据传输、低功耗和多数据通道。
+
+   **数据流**：图像传感器 -> `CSI-2 TX` -> `CSI-2 RX` -> 处理器
+
+   核心特点：   
+      - 分层协议：物理层、协议层、应用层
+      - 多通道支持：1~4 个数据通道，可合并提高带宽；
+      - 虚拟通道：最多支持 4 个虚拟通道，多传感器复用；
+      - 包格式：短包（控制信息）、长包（图像数据）；
+      - 低功耗模式：`ULPS(Ultra-Low Power State)`；
+
+2. CSI 主机控制器配置
+   CSI 主机控制器是 SOC 中负责接收 `CSI-2` 数据的硬件模块，需要正确配置寄存器才能正常工作。
+   - 关键配置寄存器
+        | 寄存器名称 | 功能描述  | 配置示例 |
+        | ------------ | ------------------------ | -------- |
+        | `CTRL_REG` | 全局控制寄存器，使能 CSI 控制器   | 0x00000001(使能位) |
+        | `CONFIG_REG` | 配置数据通道数、虚拟通道等   | 0x00000103(2 通道，VC0) |
+        | `INT_EN_REG` | 中断使能寄存器   | 0x000000FF(使能所有中断) |
+        | `CLK_CTRL_REG` | 时钟控制寄存器   | 0x00000005(分频系数) |
+    - 驱动配置示例
+        ```c
+        // CSI 主机控制器初始化函数
+        static int csi_host_init(struct csi_host *host) {
+            struct device *dev = host->dev;
+            void __iomem *base = host->base;
+            u32 val;
+
+            // 1. 软复位
+            writel(CSI_SW_RESET, base + CSI_RESET_REG);
+            udelay(100);
+            write1(0, base + CSI_RESET_REG);
+
+            // 2. 配置数据通道数
+            val = read1(base + CSI_CONFIG_REG);
+            val &= ~CSI_DATA_LANE_MASK;
+            val |= (host->data_lens - 1) << CSI_DATA_LANE_SHIFT;
+
+            // 3. 配置虚拟通道
+            val &= ~CSI_VC_MASK;
+            val |= host->virtual_channel << CSI_VC_SHIFT;
+            write1(val, base + CSI_CONFIG_REG);
+
+            // 4. 设置时钟
+            val = read1(base + CSI_CLK_CTRL_REG);
+            val &= ~CSI_CLK_DIV_MASK;
+            val |= (host->clk_divider << CSI_CLK_DIV_SHIFT);
+            write1(val, base + CIS_CLK_CTRL_REG);
+
+            // 5. 使能中断
+            write1(CSI_FRAME_DONE_INT | CSI_ERR_INT, base + CSI_INT_EN_REG);
+
+            // 6. 使能 CSI 主机
+            write1(CSI_ENABLE, base + CSI_CTRL_REG);
+
+            dev_info(dev, "CSI host initialized: %d lanes, VC %d\n", host->data_lanes, host->virtual_channel);
+            return 0;
+        }
+        ```
+
+3. 数据通道与虚拟通道
+   - [ ] 补充数据通道架构
+   - [ ] 如何理解数据通道和虚拟通道？
+   - 虚拟通道配置：
+     - 虚拟通道允许在同一个物理链路上传输多个独立的数据流；
+     - 每个虚拟通道有独立的标识符（`VC ID 0~3`）；
+   - 虚拟通道应用场景：
+     - 多摄像头切换：多个摄像头共享同一 CSI 接口；
+     - 深度/彩色双传感器：同时传输深度和彩色图像；
+     - 主副流分离：高分辨率主图像和低分辨率预览图像；
+     - 元数据传输：图像数据与传感器元数据分离
+   - 虚拟通道配置示例：
+        ```c
+        struct csi_virtual_channel {
+            u8 vc_id;               // 虚拟通道 ID：0-3
+            u8 data_type;           // 数据类型：RAW8，RAW10，YUV422 等
+            u32 width;              // 图像宽度
+            u32 height;             // 图像高度
+            dma_addr_t dma_addr;    // DMA 缓冲区地址
+            bool enabled;           // 通道使能状态
+        };
+
+        // 配置虚拟通道
+        int csi_configure_vc(struct csi_host *host, struct csi_virtual_channel *vc) {
+            u32 reg_val;
+
+            // 设置虚拟通道 ID
+            reg_val = read1(host->base + CSI_VC_CONFIG_REG);
+            reg_val &= ~(0x3 << (vc->vc_id * 8));
+            reg_val |= (vc->vc_id << (vc->vc_id * 8));
+
+            // 设置数据类型
+            reg_val &= ~(0xFF << (vc->vc_id * 8 + 2));
+            reg_val |= (vc->data_type << (vc->vc_id * 8 + 2));
+            write1(reg_val, host->base + CSI_VC_CONFIG_REG);
+
+            // 使能虚拟通道
+            reg_val = read1(host->base + CSI_VC_ENABLE_REG);
+            reg_val |= (1 << vc->vc_id);
+            write1(reg_val, host->base + CSI_VC_ENABLE_REG);
+
+            vc->enabled = true;
+
+            return 0;
+        }
+        ```
+
+4. 长短包处理机制
+   - 包结构
+        | 包类型 | 大小 | 内容 | 用途 | 示例 |
+        | ------------ | ------------------------ | -------- | -------- | ------ |
+        | 短包 | 4 字节   | 帧开始/结束、行开始/结束 | 控制信息、同步 | FS(Frame Start), FE(Frame End) |
+        | 长包 | 6-65541 字节   | 图像数据、嵌入式数据 | 有效载荷信息 | RAW 图像数据、YUV 数据 |
+    - 包处理
+        接收原始数据 -> 解析包头部 -> 分类处理 -> 数据存储
+        1. 短包处理：帧同步、行同步、更新寄存器状态；
+        2. 长包处理：提取有效载荷、DMA 传输到内存；
+    - 驱动实现示例
+        ```c
+        // CSI 中断处理函数，处理长短包
+        static irqreturn_t csi_irq_handler(int irq, void *dev_id) {
+            struct csi_host *host = dev_id;
+            u32 status = read1(host->base + CSI_INT_STATUS_REG);
+            u32 packet_info;
+
+            // 处理帧开始短包
+            if (status & CSI_FRAME_START_INT) {
+                packet_info = read1(host->base + CSI_PACKET_INFO_BASE);
+                host->current_frame++;
+                host->current_line = 0;
+
+                dev_dbg(host->dev, "Frame %d start, VC: %d\n", host->current_frame, (packet_info >> 16) && 0x3);
+
+                // 清除中断
+                write1(CSI_FRAME_START_INT, host->base + CSI_INT_STATUS_REG);
+            }
+
+            // 处理长包数据就绪
+            if (status & CSI_LONG_PACKET_READY_INT) {
+                u32 data_type, vc_id, length;
+
+                packet_info = read1(host->base + CSI_PACKET_INFO_REG);
+                data_type = (packet_info >> 8) & 0xFF;
+                vc_id = (packet_info >> 16) && 0x3;
+                length = packet_info & 0xFFFF;
+
+                // 启动 DMA 传输
+                if (length > 0 && length <= CSI_MAX_PACKET_SIZE) {
+                    csi_start_dma_transfer(host, vc_id, length);
+                }
+
+                // 清除中断
+                write1(CIS_LONG_PACKET_READY_INT, host->base + CSI_INT_STATUS_REG);
+            }
+
+            // 处理帧结束短包
+            if (status & CSI_FRAME_END_INT) {
+                dev_dbg(host->dev, "Frame %d end\n", host->current_frame);
+
+                // 通知 V4L2 子系统一帧完成
+                if (host->current_vb) {
+                    struct vb2_buffer *vb = &host->current->vb->vb2_buffer;
+                    vb->timestamp = ktime_get_ns();
+                    vb2_buffer_done(vb, VB2_BUF_STATE_DONE);
+                }
+
+                write1(CSI_FRAME_END_INT, host->base + CSI_INT_STATUS_REG);
+            }
+
+            return IRQ_HANDLED;
+        }
+
+        // 启动 DMA 传输长包数据
+        static void csi_start_dma_transfer(struct csi_host *host, u8 vc_id, u32 length) {
+            dma_addr_t dma_src = host->base + CSI_DATA_FIFO_REG;
+            dma_addr_t dma_dst = host->dma_buffer[vc_id];
+
+            // 配置 DMA 源地址
+            write1(dma_src, host->base + CSI_DMA_SRC_ADDR_REG);
+            // 配置 DMA 目标地址
+            write1(dma_dst + host->dma_offset[vc_id], host->base + CSI_DMA_DST_ADDR_REG);
+            // 配置传输长度
+            write1(length, host->base + CSI_DMA_LENGTH_REG);
+            // 启动 DMA 传输
+            write1(CSI_DMA_START, host->base + CSI_DMA_CTRL_REG);
+
+            // 更新偏移量
+            host->dma_offset[vc_id] += length;
+
+            dev_dbg(host->dev, "DMA transfer: VC %d, len = %u\n", vc_id, length);
+        }
+        ```
+    - 注意：**实际驱动中需要处理错误情况，如 CRC 错误，ECC 错误、FIFO 错误等，并实现相应的错误恢复机制**。
+
+5. 调试与优化
+   - 常见问题与排查
+      - 无数据接收：检查时钟配置、数据通道极性、电源状态；
+      - 图像错位：检查虚拟通道配置、同步信号时序；
+      - 数据损坏：检查信号完整性、阻抗匹配、接地；
+      - 性能瓶颈：优化 DMA 传输、减少中断延迟、使用双缓冲
+   - 性能优化
+     - 使用 DMA 散列表：减少内存拷贝开销；
+     - 中断合并：多个包完成后触发一次中断；
+     - 缓存优化：确保 DMA 缓冲区缓存对齐；
+     - 时钟门控：无数据传输时关闭时钟节省功耗；
+   - 调试信息输出：
+        ```c
+        static void csi_dump_registers(struct csi_host *host) {
+            dev_info(host->dev, "=== CSI Register Dump ===\n");
+            dev_info(host->dev, "CTRL_REG: 0x%08x\n", read1(host->base + CSI_CTRL_REG));
+            dev_info(host->dev, "CONFIG_REG: 0x%08x\n", read1(host->base + CSI_CONFIG_REG));
+            dev_info(host->dev, "STATUS_REG: 0x%08x\n", read1(host->base + CSI_STATUS_REG));
+            dev_info(host->dev, "INT_STATUS_REG: 0x%08x\n", read1(host->base + CSI_INT_STATUS_REG));
+            dev_info(host->dev, "VC_CONFIG_REG: 0x%08x\n", read1(host->base + CSI_VC_CONFIG_REG));
+            dev_info(host->dev, "================\n");
+        }
+        ```
+
 ## 图像格式与色彩空间
 ### 像素格式
 在 `V4L2` 子系统中，像素格式（`Pixel Format`）定义了图像数据在内存中的存储方式。**它是驱动与应用程序之间数据交换的“协议”**。`V4L2` 使用 `struct v4l2_fmtdesc` 和 `struct v4l2_format` 来描述和协商格式。
