@@ -419,6 +419,13 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
 
   3. **驱动必须正确处理 `start_streaming` 和 `stop_streaming` 的调用，确保硬件状态与缓冲区状态的同步**。在 `stop_streaming` 中应将所有缓冲区状态重置为 `DEQUEUED`。
 
+- `videobuf2` 队列管理
+  视频流开启后，驱动需要持续地将捕获地视频数据填充到用户提供的缓冲区中，并实现缓冲区的循环使用。
+  - 入队（`buf_queue`）：用户空间通过 `VIDIOC_QBUF` 将缓冲区放入驱动队列；
+  - 出队（`buf_done`）：**DMA 传输完成中断中，驱动程序调用 `vb2_buffer_done` 通知核心缓冲区数据就绪**；
+  - 轮转策略：通常采用 `FIFO`（先进先出）方式，确保缓冲区按顺序被填充和消费。
+
+
 ## Media Controller 框架
 媒体控制器（`Media Controller`）是 Linux 内核 `V4L2` 子系统中的一个核心框架，**用于描述和管理复杂的多媒体硬件拓扑结构**。它允许用户空间应用程序发现、配置和控制由多个硬件模块（实体）组成的多媒体设备，如摄像头、图像传感器、ISP、编解码器等。
 
@@ -544,6 +551,23 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
    ```
 
 ### 调用流程
+1. `vb2`:
+   - `streamon`：
+        ![](../../../img/subsys-v4l2/260302-230409.png)
+        1. 用户空间调用 `ioctl(fd, VIDIOC_STREAMON, &type)`；
+        2. `V4L2` 核心层调用 `vb2_core_streamon()`；
+        3. 检查状态，确保缓冲区已准备（`VB2_BUF_STATE_QUEUED`）；
+        4. 调用驱动注册的 `start_streaming()` 回调函数；
+        5. 驱动使能硬件（传感器、DMA 控制器等）；
+        6. 将缓冲区状态改为 `VB2_BUF_STATE_ACTIVE`；
+   - `streamoff`:
+        1. 用户空间调用 `ioctl(fd, VIDIOC_STREAMOFF, &type)`;
+        2. `V4L2` 核心调用 `vb2_core_streamoff()`；
+        3. 调用驱动注册的 `stop_streaming()` 回调；
+        4. 驱动停止 DMA 传输：`dmaengine_terminate_sync()`；
+        5. 停止传感器数据输出；
+        6. 将所有缓冲区状态重置为 `VB2_BUF_STATE_ERROR`;
+        7. 清空内部缓冲队列；
 
 ## 操作集实现
 ### ioctl 操作集
@@ -763,7 +787,50 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
    - `start_streaming/stop_streaming`：启动/停止硬件流；调用时机：流开启/停止时；
    - `wait_prepare/wait_finish`：释放/重新获取锁（避免死锁）；调用时机：等待事件前/后；
 
-3. 驱动实现示例：
+3. 视频流的开启`VIDIOC_STREAMON`和停止`VIDIOC_STREAMOFF`-`start_streaming`、`stop_streaming`
+   标志着视频数据采集的开始和结束，涉及到缓冲区队列的管理、DMA 传输的启动与停止，以及驱动与硬件交互的关键流程。
+
+   - `streamon` 前后状态转换：
+        | 组件  | streamon 前状态   | streamon 后状态 |
+        | --- | ---- | ---- | 
+        | 缓冲区 | `VB2_BUF_STATE_QUEUED`   | `VB2_BUF_STATE_ACTIVE` |
+        | 硬件传感器 | 待机/低功耗   | 连续输出视频数据 |
+        | DMA 控制器 | 空闲   | 循环传输中 |
+        | 驱动标志 | dev->streaming = false   | dev->streaming = true |
+    - `streamon` 与 `streamoff` 对比
+        | 特性  | VIDIOC_STREAMON   | VIDIOC_STREAMOFF |
+        | --- | ---- | ---- | 
+        | 主要作用 | 启动视频采集   | 停止视频采集 |
+        | 硬件状态 | 传感器、DMA 使能   | 传感器、DMA 禁用 |
+        | 缓冲区状态 | QUEUED -> ACTIVE   | ACTIVE/DONE -> ERROR |
+        | 可重入性 | 已开启时调用返回 -EBUSY   | 已停止时调用无影响 |
+        | 典型调用时机 | QBUF 之后，DQBUF 之前   | 采集结束或出错时 |
+    - 调试
+        1. 典型问题排查
+            | 问题现象  | 可能原因   | 解决方案 |
+            | --- | ---- | ---- | 
+            | streamon 返回 -EINVAL | 缓冲区为正确入队   | 检查 `QBUF` 调用次数和返回值 |
+            | 视频流丢帧、卡顿 | DMA 配置不当或中断延迟高   | 优化 DMA 突发长度，检查中断亲和性 |
+            | streamoff 后再次 streamon 失败 | 缓冲区状态未正确重置   | 确保 stop_streaming 中清空所有内部状态 |
+            | 内存泄露 | DMA 描述符未释放   | 在 stop_streaming 中释放所有 DMA 资源 |
+        2. 日志
+            ```c
+            // 在驱动关键位置添加调试信息
+            #define MY_DEBUG 1
+            #if MY_DEBUG
+            #define my_dbg(dev, fmt, ...) \ deb_dbg(dev->dev, "%s:%d" fmt, __func__, __LINE__, ##__VA_ARGS)
+            #else
+            #define my_dbg(dev, fmt, ...)
+            #endif
+
+            static int my_v4l2_start_streaming(struct vb2_queue *vq, unsigned int count) {
+                my_dbg(dev, "Starting streaming, %u buffers queued\n", count);
+                my_dbg(dev, "DMA addr: 0x%llx, size: %u\n", dev->cur_buf->dma_addr, dev->buf_size);
+                // ...
+            }
+            ```
+
+4. 驱动实现示例：
    ```c
     static int my_queue_setup(struct vb2_queue *vq, unsigned int *num_buffers, unsigned int *num_planes, unsigned int sizes[], struct device *alloc_devs[]) {
         // 计算缓冲区大小，设置 num_planes（平面数）
@@ -777,6 +844,93 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
         return 0;
     }
 
+    static int my_v4l2_start_streaming(sturct vb2_queue *vq, unsigned int count) {
+        struct my_device *dev = vb2_get_drv_priv(vq);
+        int ret;
+
+        // 1. 启动 DMA 引擎
+        ret = dmaengine_submit(dev->dma_desc);
+        if (ret) {
+            dev_err(dev->dev, "Failed to submit DMA: %d\n", ret);
+            return ret;
+        }
+
+        // 2. 配置传感器输出
+        ret = i2c_smbus_write_byte_data(dev->sensor_client, SENSOR_CTRL_REG, START_STREAMING);
+        if (ret) {
+            dev_err(dev->dev, "Sensor start failed: %d\n", ret);
+            dmaengine_terminate_sync(dev->dma_chan);
+            return ret;
+        }
+
+        // 3. 启动 DMA 传输
+        dma_async_issue_pending(dev->dma_chan);
+
+        // 4. 标记设备为流开启状态
+        dev->streaming = true;
+
+        dev_info(dev->dev, "Stream started successfully\n");
+        return 0;
+    }
+
+    // DMA传输完成中断中，驱动调用 vb2_buffer_done() 通知核心缓冲区数据就绪
+    // DMA 完成中断处理示例
+    static irqreturn_t my_dma_isr(int irq, void *dev_id) {
+        struct my_device *dev = dev_id;
+        struct vb2_v4l2_buffer *vbuf;
+        struct my_buffer *buf;
+
+        // 获取当前传输完成的缓冲区
+        buf = dev->cur_buf;
+        if (!buf) {
+            return IRQ_NONE;
+        }
+
+        vbuf = &buf->vb;
+
+        // 1. 标记缓冲区数据就绪
+        vbuf->sequence = dev->frame_sqe++;
+        vbuf->vb2_buf.timestamp = ktime_get_ns();
+
+        // 2. 通知 videobuf2 缓冲区已完成
+        vb2_buffer_done(&vbuf->vb2_buf, VB2_BUF_STATE_DONE);
+
+        // 3. 从队列中取出下一个缓冲区
+        dev->cur_buf = list_first_entry_or_null(&dev->buf_list, struct my_buffer, list);
+
+        if (dev->cur_buf) {
+            // 4. 启动下一次 DMA 传输
+            start_dma_transfer(dev, dev->cur_buf);
+        }
+
+        return IRQ_HANDLED;
+    }
+
+    static void my_v4l2_stop_streaming(struct vb2_queue *vq) {
+        struct my_device *dev = vb2_get_drv_priv(vq);
+
+        // 1. 停止 DMA 传输（同步等待进行中的传输完成）
+        if (dev->dma_chan) {
+            dmaengine_terminate_sync(dev->dma_chan);
+        }
+
+        // 2. 停止传感器
+        i2c_smbus_write_byte_data(dev->sensor_client, SENSOR_CTRL_REG, STOP_STREAMING);
+
+        // 3. 释放所有内部资源
+        release_internal_buffers(dev);
+
+        // 4. 重置流状态标志
+        dev->streaming = false;
+        dev->frame_seq = 0;
+        dev->cur_buf = NULL;
+
+        // 5. 清空缓存区队列（由核心层自动调用）
+        // 注意：此处不需要手动调用 vb2_buffer_done，核心层的 streamoff 会处理所有缓冲区状态重置
+
+        dev_info(dev->dev, "Stream stopped\n");
+    }
+
     static const struct vb2_ops my_vb2_ops = {
         .queue_setup    = my_queue_setup,          // 设置缓冲区数量和大小
         .buf_init       = my_buf_init,             // 缓冲区初始化
@@ -784,8 +938,8 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
         .buf_finish     = my_buf_finish,           // 缓冲区处理完成
         .buf_cleanup    = my_buf_cleanup,          // 缓冲区清理
         .buf_queue      = my_buf_queue,             // 缓冲区入队到驱动内部队列
-        .start_streaming  = my_start_streaming,        // 启动流
-        .stop_streaming   = my_stop_streaming,      // 停止流
+        .start_streaming  = my_v4l2_start_streaming,        // 启动流
+        .stop_streaming   = my_v4l2_stop_streaming,      // 停止流
         .wait_prepare   = vb2_ops_wait_prepare,
         .wait_finish    = vb2_ops_wait_finish,
     };
@@ -808,7 +962,7 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
    }
    ```
 
-4. 最佳实践与调试技巧
+5. 最佳实践与调试技巧
    - checklist
      - 正确实现 `vb2_ops` 所有必需的回调函数；
      - 根据硬件能力选择合适的内存模型（通常 `MMAP` 或 `DMABUF`）；
@@ -1588,6 +1742,50 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
 
    module_platform_driver(isp_driver);
    ```
+
+### DMA
+直接内存访问（DMA）是视频流传输性能的关键，它允许数据在设备和内存之间直接传输，无需 CPU 参与。
+1. 视频采集 DMA 配置要素
+   - 传输模式：**连续循环模式**（`Scatter-Gather`）；
+   - 数据宽度：根据像素格式确定（如 `YUV422` 为 16 位）；
+   - 突发长度：优化内存带宽利用率；
+   - 中断：**每帧传输完成产生中断**（可见 `vb2` 操作集的实现）；
+
+2. DMA 描述符链表示例
+   ```c
+   static int setup_dma_descriptors(struct my_device *dev) {
+    struct dma_async_tx_descriptor *desc;
+    struct scatterlist *sg;
+    int i, ret;
+
+    // 为每个缓冲区创建 scatterlist
+    for (i = 0; i < dev->buf_count; i++) {
+        sg = &dev->bufs[i].sg;
+        sg_init_table(sg, 1);
+        sg_dma_address(sg) = dev->bufs[i].dma_addr;
+        sg_dma_len(sg) = dev->buf_size;
+    }
+
+    desc = dmaengine_prep_slave_sg(dev->dma_chan, dev->sg_list, dev->buf_count, DMA_DEV_TO_MEM, DMA_PREP_INTERRUPT | DMA_CTRL_REUSE);
+    if (!desc) {
+        dev_err(dev->dev, "Failed to prepare DMA descriptor\n");
+        return -ENOMEM;
+    }
+
+    // 设置回调（可选）
+    desc->callback = my_dma_callback;
+    desc->callback_param = dev;
+    
+    dev->dma_desc = desc;
+    return 0;
+   }
+   ```
+
+3. 实践
+   - 在 `start_streaming` 中预先提交所有 DMA 描述符，避免在中断上下文中分配内存；
+   - 使用 `DMA_CTRL_REUSE` 标志实现描述符循环，减少运行时开销；
+   - 确保 DMA 缓冲区已正确缓存同步（`dma_sync_for_device/cpu`）；
+   - 在 `stop_streaming` 中使用 `dmaengine_terminate_sync()` 确保安全停止；
 
 ## 图像格式与色彩空间
 ### 像素格式
