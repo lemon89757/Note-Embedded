@@ -419,6 +419,112 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
 
   3. **驱动必须正确处理 `start_streaming` 和 `stop_streaming` 的调用，确保硬件状态与缓冲区状态的同步**。在 `stop_streaming` 中应将所有缓冲区状态重置为 `DEQUEUED`。
 
+## Media Controller 框架
+媒体控制器（`Media Controller`）是 Linux 内核 `V4L2` 子系统中的一个核心框架，**用于描述和管理复杂的多媒体硬件拓扑结构**。它允许用户空间应用程序发现、配置和控制由多个硬件模块（实体）组成的多媒体设备，如摄像头、图像传感器、ISP、编解码器等。
+
+设计目标是提供一种统一的方式来描述硬件内部连接关系，使得用户空间可以动态地重新配置数据流路径，而无需修改驱动代码。
+
+### 数据结构
+1. `media_device`
+   ```c
+   // <media/media-device.h>
+   ```
+   - 代表整个媒体设备，包含所有实体和链路。
+
+2. `media_entity`
+   ```c
+   // <media/media-entity.h>
+   struct media_entity {
+
+   }
+   ```
+    - 代表一个实体，包含 pad 和链路信息；
+    - `media_entity` 是媒体控制器框架中的基本构建块，代表硬件或软件中的一个功能单元；
+    - 每个 `media_entity` 都有一个唯一的 ID 和一组 `meia_pad`；
+    
+    | 实体类型  | 描述   | 示例 |
+    | ------------ | ------------------------ | -------- | 
+    | `V4L2` 子设备 | 通常代表一个独立的硬件模块，如图像传感器、镜头控制器等   | ov5640 传感器 |
+    | `V4L2` 设备节点 | 代表一个可被用户空间访问的设备，如 `/dev/video0`   | 视频捕获设备 |
+    | 媒体设备 | 代表整个媒体硬件设备，包含多个实体   | USB 摄像头模块 |
+
+3. `media_pad`
+   ```c
+   // <media/meida-entity.h>
+
+   ```
+   代表实体的输入/输出连接点。是 `media_entity` 上的连接点，用于数据的输入或输出，每个 Pad 都有一个方向（`sink` 或 `source`）和类型：
+   - `source`: 输出数据流，数据从此处流出；
+   - `sink`: 输入数据流，数据从此处流入；
+
+4. `media_link`
+   ```c
+   ```
+   代表两个 pad 之间的连接。link 连接两个 `media_entity` 的 `media_pad`，定义了数据流的路径。link 可以是：
+   - 使能（`Enable`）：数据可以通过此链路流动；
+   - 禁用（`Disabled`）：数据不能通过此链路流动；
+   - 动态（`Dynamic`）：可以在运行时启用或禁用
+
+### 拓扑描述与配置
+   - [ ] 补充由媒体控制器框架构成的拓扑结构图
+
+2. 典型摄像头硬件拓扑：
+        传感器 -> ISP -> 编解码器 -> V4L2 设备节点
+
+3. 驱动中的拓扑配置示例
+   ```c
+   #include <media/media-entity.h>
+   #include <media/v4l2-subdev.h>
+
+   // 1. 定义 entity
+   struct v4l2_subdev sensor_sd;
+   struct media_entity *sensor_entity = &sersor_sd.entity;
+
+   // 2. 初始化 entity
+   sensor_entity->name = "ov5640";
+   sensor_entity->function = MEDIA_ENT_F_CAM_SENSOR;
+
+   // 3. 初始化 pad
+   sensor_entity->pads = kcalloc(1, sizeof(struct media_pad), GFP_KERNEL);
+   sensor_entity->pads[0].flags = MEDIA_PAD_FL_SOURCE;  // 输出 pad
+   sensor_entity->num_pads = 1;
+
+   // 4. 注册 entity
+   ret = meida_device_register_entity(mdev, sensor_entity);
+
+   // 5. 创建 link
+   struct media_link *link;
+   link = media_create_pad_link(sensor_entity, 0,   // source entity 和 pad
+                                isp_entity, 0,      // sink entity 和 pad
+                                MEDIA_LNK_FL_ENABLE | MEDIA_LNK_FL_IMMUTABLE
+                            );
+   ```
+
+4. 用户空间配置
+   使用 `media-ctl` 工具可以查看和配置媒体控制器拓扑：
+   ```bash
+   # 查看拓扑
+   media-ctl -p
+
+   # 设置格式
+   media-ctl --set-v4l2 '"ov5640":0[fmt:UYVY8_2x8/1280x720]'
+
+   # 启动/禁用链路
+   media-ctl -l '"ov5640":0->"isp":0[0]' # 禁用
+   media-ctl -l '"ov5640":0->"isp":0[1]' # 启用
+   ```
+
+5. `struct v4l2_subdev` 通常包含一个 `struct media_entity`
+
+### 实践与注意事项
+1. 媒体控制器框架虽然强大，但也增加了驱动复杂性，仅在硬件确实需要动态配置数据流路径时才使用。
+2. 合理设计拓扑：在驱动设计阶段就明确硬件的数据流路径；
+3. 正确设置链路标志：
+   - `MEDIA_LNK_FL_ENABLE`：链路默认启用；
+   - `MEDIA_LNK_FL_IMMUTABLE`：链路不可更改；
+   - `MEDIA_LNK_FL_DYNAMIC`：链路可动态启动/禁用
+4. 错误处理：媒体控制器 API 可能失败，需要适当的错误处理；
+5. 用户空间兼容性：确保 `media-ctl` 等工具可以正确操作驱动；
 
 ## 调用链
 ### 涉及的 ops 结构体
