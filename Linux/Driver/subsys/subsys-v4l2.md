@@ -902,6 +902,302 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
    }
    ```
 
+## 拓扑结构各环节驱动
+### 摄像头传感器驱动
+摄像头传感器驱动是连接硬件传感器与 `V4L2` 框架的核心桥梁。**它负责通过 `I2C` 总线与传感器芯片通信，配置其内部寄存器、管理电源与时钟并设置图像输出格式**。
+
+1. I2C 通信
+   - I2C 设备与驱动匹配
+        ```c
+        static const struct of_device_id ov5640_of_match[] = {
+            {.compatible = "ovti, ov5640"},
+            {/* sentinel */}
+        };
+        MODULE_DEVICE_TABLE(of, ov5640_of_match);
+
+        static struct i2c_driver ov5640_i2c_driver = {
+            .driver = {
+                .name = "ov5640",
+                .of_match_table = ov5640_of_match,
+            },
+            .probe = ov5640_probe,
+            .remove = ov5640_remove,
+            .id_table = ov5640_id,
+        };
+        module_i2c_driver(ov5640_i2c_driver);
+        ```
+    - I2C 读写操作
+        ```c
+        // 外设通过调用 SOC I2C 控制器驱动完成与自己的通信
+        static int ov5640_write_reg(struct i2c_client *client, u16 reg, u8 val) {
+            struct i2c_msg msg;
+            u8 buf[3];
+            int ret;
+
+            buf[0] = reg >> 8;
+            buf[1] = reg & 0xff;
+            buf[2] = val;
+
+            msg.addr = client->addr;
+            msg.flags = 0;
+            msg.buf = buf;
+            msg.len = sizeof(buf);
+
+            ret = i2c_transfer(client->adapter, &msg, 1);
+            if (ret < 0) {
+                dev_err(&client->dev, "Write reg error: %d\n", ret);
+                return ret;
+            }
+
+            return 0;
+        }
+
+        static int ov5640_read_reg(struct i2c_client *client, u16 reg, u8 *val) {
+            struct i2c_msg msg[2];
+            u8 buf[2];
+            int ret;
+
+            buf[0] = reg >> 8;
+            buf[1] = reg & 0xff;
+
+            msg[0].addr = client->addr;
+            msg[0].flags = 0;
+            msg[0].buf = buf;
+            msg[0].len = sizeof(buf);
+
+            msg[1].addr = client->addr;
+            msg[1].flags = I2C_M_RD;
+            msg[1].buf = val;
+            msg[1].len = 1;
+
+            ret = i2c_transfer(client->adapter, &msg, 2);
+            if (ret < 0) {
+                dev_err(&client->dev, "Read reg error: %d\n", ret);
+                return ret;
+            }
+
+            return 0;
+        }
+        ```
+
+2. 寄存器配置
+   传感器初始化、模式切换、参数调整均通过配置寄存器完成。
+   - 寄存器配置序列：通常将寄存器配置组织成数组，在 `probe` 或 `stream on` 时批量写入。
+        ```c
+        static const struct regval ov5640_init_regs[] = {
+            {0x3103, 0x11},     // 系统时钟源选择
+            {0x3008, 0x82},     // 软件复位
+            {0x3008, 0x42},     // 退出复位
+            {0x3103, 0x03},     // PLL 控制
+            {0x3017, 0xff},     // MIPI 使能
+            {0x3018, 0xff},     // GPIO 控制
+            {0x3034, 0x1a},     // MIPI 10-bit
+            {0x3037, 0x13},     // MIPI PLL 分频
+            {0x3108, 0x01},     // PLL 分频器
+            {0x3630, 0x36},
+            {0x3631, 0x0e},
+            // ... 更多初始化寄存器
+            {REG_NULL, 0x00},
+        }
+
+        static int ov5640_write_array(struct i2c_client *client, const struct regval *regs) {
+            u32 i;
+            int ret = 0;
+
+            for (i = 0; regs[i].addr != REG_NULL; i++) {
+                ret = ov5640_write_reg(client, regs[i].addr, regs[i].val);
+                if (ret)
+                    break;
+            }
+
+            return ret;
+        }
+        ```
+    - 常用配置类别：
+        | 类别 | 寄存器示例 | 功能描述 |
+        | ------------ | ------------------------ | -------- |
+        | 电源复位 | `0x3008`   | 软件复位、睡眠模式控制 | 
+        | 时钟与 PLL | `0x3034, 0x3108`   | 系统时钟、MIPI 时钟配置 | 
+        | 图像尺寸 | `0x3800-0x3807`   | 水平/垂直起始、尺寸设置 | 
+        | 输出格式 | `0x4300`   | `RGB/YUV` 格式选择 | 
+        | 曝光与增益 | `0x3500-0x350A`   | 自动曝光、手动增益控制 | 
+
+3. 电源与时钟管理
+   现代传感器通常需要多路电源（模拟、数字、IO）和时钟（MCLK）才能工作。
+    ```dts
+    &i2c1 {
+        camera_sensor: ov5640@3c {
+            compatible = "ovti, ov5640";
+            reg = <0x3c>;
+            clocks = <&clks IMX8MP_CLK_IPP_DO_CLKO2>;
+            clock-names = "xclk";
+            pinctrl-names = "default";
+            pinctrl-0 = <&pinctrl_csi>;
+            powerdown-gpios = <&gpio1 5 GPIO_ACTIVE_LOW>;
+            reset-gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;
+            avdd-supply = <_avdd_2v8>;      // 模拟电源 2.8v
+            dovdd-supply = <_dovdd_1v8>;    // IO 电源 1.8v
+            dvdd-supply = <_dvdd_1v2>;      // 数字核心电源 1.2v
+            port {
+                sensor_ep: endpoint {
+                    remote-endpoint = <&csi_ep>;
+                    data-lanes = <1 2>;
+                    clock-lanes = <0>;
+                }
+            };
+        };
+    };
+    ```
+   - 电源管理：使用 `regulator` 框架管理电源，在设备树中定义电源引脚；
+        在驱动中获取 `regulator`：
+        ```c
+        static int ov5640_power_on(struct device *dev) {
+            struct ov5640 *sensor = dev_get_drvdata(dev);
+            int ret;
+
+            ret = regulator_enable(sensor->avdd);
+            if (ret) {
+                dev_err(dev, "Failed to enable AVDD\n");
+                return ret;
+            }
+            usleep_range(1000, 2000);
+
+            ret = regulator_enable(sensor->dovdd);
+            if (ret) {
+                dev_err(dev, "Failed to enable DOVDD\n");
+                goto err_dovdd;
+            }
+            usleep_range(1000, 2000);
+
+            ret = regulator_enable(sensor->dvdd);
+            if (ret) {
+                dev_err(dev, "Failed to enable DVDD\n");
+                goto err_dvdd;
+            }
+            usleep_range(1000, 2000);
+
+            // 使能时钟
+            ret = clk_prepare_enable(sensor->xclk);
+            if (ret) {
+                dev_err(dev, "Failed to enable xclk\n");
+                goto err_clk;
+            }
+            usleep_range(5000, 10000);
+
+            // 释放复位引脚
+            gpiod_set_value_cansleep(sensor->reset_gpio, 1);
+            usleep_range(5000, 10000);
+
+            return 0;
+        err_clk:
+            regulator_disable(sensor->dvdd);
+        err_dvdd:
+            regulator_disable(sensor->dovdd);
+        err_dovdd:
+            regulator_disable(sensor->avdd);
+            return ret;
+        }
+        ```
+    - 时钟管理：传感器需要外部主时钟（MCLK），通过时钟框架获取并设置频率
+        ```c
+        static int ov5640_configure_clocks(struct ov5640 *sensor) {
+            struct device *dev = &sensor->client->dev;
+            unsigned long rate;
+            int ret;
+
+            // 获取时钟
+            sensor->xclk = devm_clk_get(dev, "xclk");
+            if (IS_ERR(sensor->xclk)) {
+                dev_err(dev, "failed to get xclk\n");
+                return PTR_ERR(sensor->xclk);
+            }
+
+            // 设置频率，例如 24MHz
+            rate = clk_round_rate(sensor->xclk, 24000000);
+            ret = clk_set_rate(sensor->xclk, rate);
+            if (ret < 0) {
+                dev_err(dev, "failed to set xclk rate\n");
+                return ret;
+            }
+
+            dev_dbg(dev, "xclk frequency: %lu\n", clk_get_rate(sensor->xclk));
+            return 0;
+        }
+        ```
+
+4. 输出格式设置
+   传感器支持多种输出格式（`YUV, RGB, RAW`），需通过寄存器配置并与 `V4L2` 媒体框架对接。
+   - 格式描述与配置
+        ```c
+        static const struct ov5640_pixfmt ov5640_formats[] = {
+            {
+                .code = MEDIA_BUS_FMT_UYVY8_2x8,
+                .regs = ov5640_init_regs_uyvy,
+            },
+            {
+                .code = MEDIA_BUS_FMT_RGB565_2x8_LE,
+                .regs = ov5640_init_regs_rgb565,
+            },
+            {
+                .code = MEDIA_BUS_FMT_SBGGR10_1x10,
+                .regs = ov5640_init_regs_raw10,
+            },
+        };
+
+        static int ov5640_set_format(struct v4l2_subdev *sd, struct v4l2_subdev_state *sd_state, struct v4l2_subdev_format *fmt) {
+            struct ov5640 *sensor = to_ov5640(sd);
+            const struct ov5640_pixfmt *format;
+            struct v4l2_mbus_framefmt *mbus_fmt = &fmt->format;
+
+            // 查找匹配的格式
+            format = ov5640_find_format(mbus_fmt->code);
+            if (!format) {
+                format = &ov5640_formats[0];    // 默认格式
+            }
+
+            mbus_fmt->code = format->code;
+            mbus_fmt->width = clamp_t(u32, mbus_fmt->width, OV5640_MIN_WIDTH, OV5640_MAX_WIDTH);
+            mbus_fmt->height = clamp_t(u32, mbus_fmt->height, OV5640_MIN_HEIGHT, OV5640_MAX_HEIGHT);
+            mbus_fmt->field = V4L2_FIELD_NONE;
+            mbus_fmt->colorspace = V4L2_COLORSPACE_SRGB;
+
+            // 保存设置
+            if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
+                sensor->cur_fmt = format;
+                sensor->frame_size.width = mbus_fmt->width;
+                sensor->frame_size.height = mbus_fmt->height;
+                // 应用寄存器配置
+                ov5640_write_array(sensor->client, format->regs);
+                // 设置尺寸相关寄存器
+                ov5640_set_size(sensor);
+            } else {
+                // 用于 TRY 格式，仅存储于 sd_state
+                struct v4l2_mbus_framefmt *try_fmt = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
+                *try_fmt = *mbus_fmt;
+            }
+
+            return 0;
+        }
+        ```
+    - 分辨率与帧控制率
+        | 分辨率          | 寄存器组  | 最大帧率（fps） | 输出接口 |
+        | ------------ | ------------------------ | -------- | -------- |
+        | `2592x1944(5MP)` | `0x3800-0x3814`   | 15 | MIPI CSI-2 |
+        | `1920x1080(1080P)` | `0x3800-0x3814`   | 30 | DVP 并行 |
+        | `1280x720(720p)` | `0x3800-0x3814`   | 60 | MIPI CSI-2 |
+        | `640x480(VGA)` | `0x3800-0x3814`   | 90 | DVP 并行 |
+        注意：输出格式、分辨率与帧率相互制约。高分辨率通常伴随着低帧率，且不同输出接口（`MIPI`、`DVP`）的能力也不同。配置时需要参考传感器数据手册的 `Timing Chart` 章节。
+
+5. 总结
+   - 硬件对接：确认设备树中 I2C 地址、电源、时钟、复位引脚配置正确；
+   - 驱动框架：实现 `i2c_driver` 并注册，在 `probe` 中初始化 `V4L2` 子设备；
+   - 电源时钟：使用 `regulator` 和 `clk` 框架按顺序上电、提供时钟；
+   - I2C 通信：实现可靠的寄存器读写函数，可加入重试机制；
+   - 初始化序列：根据数据手册编写初始化寄存器数组，并在合适时机写入；
+   - 格式支持：**定义支持的媒体总线格式**，实现 `set_fmt`、`get_fmt` 等 `V4L2` 子设备操作；
+   - 流控制：实现 `s_stream` 回调，在开启流时启动传感器，**关闭时进入低功耗模式**；
+   - 调试：使用 `media-ctl`、`v4l2-ctl` 工具验证拓扑与格式设置，通过 `i2c-tools` 直接读写寄存器进行硬件调试；
+
 ## 图像格式与色彩空间
 ### 像素格式
 在 `V4L2` 子系统中，像素格式（`Pixel Format`）定义了图像数据在内存中的存储方式。**它是驱动与应用程序之间数据交换的“协议”**。`V4L2` 使用 `struct v4l2_fmtdesc` 和 `struct v4l2_format` 来描述和协商格式。
