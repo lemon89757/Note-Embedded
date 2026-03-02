@@ -902,6 +902,8 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
    }
    ```
 
+### v4l2_ctrl_ops 操作集
+
 ## 拓扑结构各环节驱动
 ### 摄像头传感器驱动
 摄像头传感器驱动是连接硬件传感器与 `V4L2` 框架的核心桥梁。**它负责通过 `I2C` 总线与传感器芯片通信，配置其内部寄存器、管理电源与时钟并设置图像输出格式**。
@@ -1417,6 +1419,175 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
             dev_info(host->dev, "================\n");
         }
         ```
+
+### ISP
+图像信号处理（`Image Signal Process, ISP`）是现代摄像头系统中的核心硬件，负责将原始传感器数据（`Bayer RAW`）转换为高质量、可视的 `YUV/RGB` 图像。在 `V4L2` 框架中，`ISP` 被建模为一系列子设备，通过媒体控制器构建可编程的数据处理流水线（`pipeline`）。
+
+数据流：`Sensor` -> `ISP Subdeb` -> `V4L2 Video Node` -> `User Space`
+
+**`ISP` 子设备通常提供多个处理模块**（如去马赛克、降噪、色彩校正等），每个模块可**通过 `V4L2` 控件进行配置**。这种设计使得驱动和应用程序能够灵活地控制图像质量。
+
+1. `V4L2` 子设备链（`Subdev Chain`）
+   `V4L2` 通过媒体控制器 API 将传感器、`ISP`、编解码器等硬件组件连接成一条可配置的数据流管道。
+   ```bash
+   # 通过 media-ctl 发现拓扑
+   media-ctl -p
+   # 通过 media-ctl 建立子设备链接
+   # 建立传感器 -> CSI -> ISP 链路
+   media-ctl -l "'ov5640 2-003c':0 -> 'imx6-mipi-csi2':0 [1]"
+   media-ctl -l "'imx6-mipi-csi2':1 -> 'ipu_csi0':0 [1]"
+   # 设置格式（传感器输出 -> CSI 接收）
+   media-ctl -V "'ov5640 2-003c':0 [fmt:UYVY8_2x8/640x480]"
+   media-ctl -V "'imx6-mipi-csi2':0 [fmt:UYVY8_2x8/640x480]"
+   media-ctl -V "'ipu1_csi0':0 [fmt:UYVY8_2x8/640x480]"
+   ```
+   注意：子设备链的配置必须在打开视频设备节点前完成，以确保数据流路径正确建立。
+
+2. `ISP` 控件（`Controls`）系统
+   **`V4L2` 控件（`Controls`）是配置 `ISP` 参数的标准接口**，涵盖从基础参数到高级图像质量调整的各个方面。
+
+    | 控件类别 | 典型控件 ID | 功能描述 | 数值类型 |
+    | ------ | ------| -------- | -------- |
+    | 曝光控制 | `V4L2_CID_EXPOSURE_AUTO`   | 自动/手动曝光模式 | 枚举型 |
+    | 白平衡 | `V4L2_CID_AUTO_N_PRESET_WHILE_BALANCE`   | 自动/预设白平衡 | 枚举型 |
+    | 色彩校正 | `V4L2_CID_SATURATION`   | 饱和度调整 | 整型（`0~255`） |
+    | 锐化/降噪 | `V4L2_CID_SHARPNESS`   | 锐化强度 | 整型 |
+    | 镜头校正 | `V4L2_CID_LENS_SHADING_CORRECTION`   | 镜头阴影校正 | 布尔型 |
+    | 3A 统计 | `V4L2_CID_3A_STATISTICS`   | 获取AE/AWB/AF统计信息 | 复合型 |
+
+    查询和设置 ISP 控件示例：
+    ```c
+    #include <linux/v4l2-controls.h>
+
+    // 查询控件信息
+    struct v4l2_queryctrl queryctrl = {0};
+    queryctrl.id = V4L2_CID_EXPOSURE_AUTO;
+    if (ioctl(fd, VIDIOC_QUERYCTRL, &queryctrl) == 0) {
+        printf("Control name: %s\n", queryctrl.name);
+        printf("Min: %d, Max: %d, Step: %d\n", queryctrl.minimum, queryctrl.maximum, queryctrl.step);
+    }
+
+    // 设置自动曝光模式
+    struct v4l2_control control = {0};
+    control.id = V4L2_CID_EXPOSURE_AUTO;
+    control.value = V4L2_EXPOSURE_AUTO;
+    if (ioctl(fd, VIDIOC_S_CTRL, &control) < 0) {
+        perror("Failed to set exposure");
+    }
+    ```
+
+3. `3A` 算法接口
+   `3A`（自动曝光（`AE`）、自动白平衡（`AWB`）、自动对焦（`AF`））是 `ISP` 的核心算法，`V4L2` 提供了标准化的接口供用户空间算法与 `ISP` 硬件交互。
+   - `3A` 统计数据结构
+        ```c
+        // V4L2 3A 统计数据结构（简化）
+        struct v4l2_3a_statistics {
+            // AF 统计
+            struct {
+                __u32 exposure_value;
+                __u32 brightness_avg;
+                __u32 histogram[256];
+            } ae;
+
+            // AWB 统计
+            struct {
+                __u32 r_gain;
+                __u32 g_gain;
+                __u32 b_gain;
+                __u32 color_temperature;
+            } awb;
+
+            // AF 统计
+            struct {
+                __u32 focus_position;
+                __u32 contrast_value;
+                __u32 sharpness_score;
+            } af;
+
+            __u32 flags;        // V4L2_3A_STAT_* 标志位
+        }
+        ```
+   - `3A` 算法集成步骤
+     1. 启用统计信息收集：通过 `V4L2_CID_3A_STATISTICS_MODE` 控件启用 `ISP` 统计功能；
+     2. 获取统计信息：使用 `VIDIOC_G_EXT_CTRLS` 获取 AE/AWB/AF 统计数据结构；
+     3. 算法处理：用户控件算法分析统计信息，计算最优参数；
+     4. 应用新参数：通过 `V4L2` 控件设置新的曝光时间、增益、白平衡增益等；
+     5. 循环反馈：持续收集统计信息，实现闭环控制；
+
+4. 完整 `ISP` 驱动集成示例：
+   简化的 `ISP` 驱动模块示例，展示如何注册 `ISP` 子设备并暴露控件。
+   ```c
+    #include <linux/module.h>
+    #include <linux/v4l2-subdev.h>
+    #include <media/v4l2-ctrls.h>
+    #incldue <media/v4l2-device.h>
+
+    struct isp_device {
+    struct v4l2_subdev sd;
+    struct v4l2_ctrl_handler ctrl_handler;
+    // ISP 硬件寄存器基地址等私有数据
+    void __iomem *base;
+   };
+
+   static const struct v4l2_ctrl_ops isp_ctrl_ops = {
+    .s_ctrl = isp_s_ctrl,   // 控件设置回调
+   };
+
+   static int isp_init_controls(struct isp_device *isp) {
+    v4l2_ctrl_handler_init(&isp->ctrl_handler, 10);
+
+    // 添加自动曝光控件
+    v4l2_ctrl_new_std_menu(&isp->ctrl_handler, &isp_ctrl_ops, V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_MANUAL, 0, V4L2_EXPOSURE_AUTO);
+    // 添加曝光时间控件
+    v4l2_ctrl_new_std(&isp->ctrl_handler, &isp_ctrl_ops, V4L2_CID_EPOSURE_ABSOLUTE, 1, 10000, 1, 100);
+    // 添加白平衡控件
+    v4l2_ctrl_new_std_menu(&isp->ctrl_handler, &isp_ctrl_ops, V4L2_CID_AUTO_N_PRESET_WHITE_BALANCE, V4L2_WHITE_BALANCE_SHADE, 0, V4L2_WHITE_BALANCE_AUTO);
+    // 添加饱和度控件
+    v4l2_ctrl_new_std(&isp_ctrl_handler, &isp_ctrl_ops, V4L2_CID_SATURATION, 0, 255, 1, 128);
+    
+    if (isp->ctrl_handler.error) {
+        return isp->ctrl_handler.error;
+    }
+
+    isp->sd.ctrl_handler = &isp->ctrl_handler;
+    return 0;
+   }
+
+   static int isp_probe(struct platform_device *pdev) {
+    struct isp_device *isp;
+    int ret;
+
+    isp = devm_kzalloc(&pdev->dev, sizeof(*isp), GFP_KERNEL);
+    if (!isp) {
+        return -ENOMEM;
+    }
+
+    // 初始化 v4l2 子设备
+    v4l2_subdev_init(&ips->sd, &isp_subdev_ops);
+    isp->sd.owner = THIS_MODULE;
+    isp->sd.flags = V4L2_SUBDEV_FL_HAS_DEVNODE;
+    snprintf(ips->sd.name, sizeof(ips->sd.name), "isp-subdev");
+
+    // 初始化控件
+    ret = isp_init_controls(isp);
+    if (ret) {
+        return ret;
+    }
+
+    // 注册子设备
+    ret = v4l2_async_register_subdev(&isp->sd);
+    if (ret) {
+        v4l2_ctrl_handler_free(&isp->ctrl_handler);
+        return ret;
+    }
+
+    platform_set_drvdata(pdev, isp);
+    dev_info(&pdev->dev, "ISP subdev registerd successfully\n");
+    return 0;
+   }
+
+   module_platform_driver(isp_driver);
+   ```
 
 ## 图像格式与色彩空间
 ### 像素格式
