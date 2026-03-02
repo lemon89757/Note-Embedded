@@ -58,6 +58,245 @@
 ### 三种接口对比
 ![](../../../img/subsys-v4l2/260301-165943.png)
 
+## V4L2-Core
+
+### 概述
+
+### video_device
+
+### v4l2_device
+
+### v4l2_subdev
+在 `V4L2` 框架中，子设备（`sub-device`）代表一个独立的硬件组件，如传感器（sensor）、镜头控制器（lens controller）或图像处理器（ISP）。它通过 `struct v4l2_subdev` 进行抽象，并注册到 `V4L2` 子系统中，与主设备（如视频设备节点）协同工作。
+
+核心思想是子设备将复杂的摄像头硬件模块化，每个子设备负责特定的功能，通过标准接口与主设备通信，实现解耦和灵活配置。
+
+1. 数据结构
+   ```c
+   struct v4l2_subdev {
+
+   }
+   ```
+
+2. 与主设备通信
+   子设备与主设备（如 `V4L2` 视频设备节点）之间的通信是 `V4L2` 驱动框架的关键。通信方式主要包括：
+   - 直接调用：主设备驱动程序直接调用子设备的操作函数，如 `v4l2_subdev_call(sd, video, s_stream, 1)`；
+   - 事件通知：子设备通过 `v4l2_event_queue()` 向主设备发送事件，如帧同步信号；
+   - 媒体控制器：通过媒体控制器框架建立数据流管道，实现复杂的多子设备拓扑；
+   ```c
+   // 主设备调用子设备
+   // 主设备驱动中启动视频流
+   static int my_video_device_s_stream(struct file *file, void *priv, int enable) {
+    struct my_main_device *dev = video_drvdata(file);
+    struct v4l2_subdev *sensor_sd = dev->sensor_subdev;
+    int ret;
+
+    // 调用子设备的 s_stream 操作
+    ret = v4l2_subdev_call(sensor_sd, video, s_stream, enable);
+    if (ret < 0) {
+        dev_err(dev->dev, "Failed to %s sensor stream\n", enable ? "start" : "stop");
+        return ret;
+    }
+
+    // 其他硬件启动操作
+    // ...
+
+    return 0
+   }
+
+   // 子设备通知主设备示例
+   // 在子设备中断处理中发送事件
+   static irqreturn_t my_sensor_irq_handler(int irq, void *dev_id) {
+    struct v4l2_subdev *sd = dev_id;
+    struct v4l2_event event = {
+        .type = V4L2_EVENT_FRAME_SYNC,
+        .u.fram_sync.frame_count = get_frame_count(),
+    };
+
+    // 队列事件，主设备可以 poll/read 该事件
+    v4l2_event_queue(sd->devnode, &event);
+    return IRQ_HANDLED;
+   }
+   ```
+
+3. 开发流程与实践
+   - 子设备开发流程：定义 `ops` -> 初始化 `subdev` -> 注册到 `V4L2` -> 实现通信；
+   - 测试与调试：利用 `v4l2-ctl` 工具和内核的 `v4l2-compliance` 测试子设备功能；
+   - 明确职责：**子设备应专注于硬件控制，不涉及缓冲区管理等由主设备处理的任务**；
+   - 错误处理：子设备操作应返回标准的错误码（如 `-EIO`、`-EINVAL`），并在日志中记录详细错误信息；
+   - 电源管理：**实现 `pm_runtime` 支持，确保子设备在空闲时进入低功耗状态**；
+   - `DT` 绑定：使用设备树描述子设备的硬件连接和属性，提高可移植性；
+
+### V4L2 控制框架
+- [ ] 确定这是 v4l2-core 还是哪个其他框架下的
+`V4L2` 控制框架为摄像头、视频采集卡等设备提供了一套统一的控制接口。通过该框架，用户空间应用程序可以查询、设置设备的各种参数（如亮度、对比度、曝光、白平衡等），驱动开发者则可以定义标准或自定义的控制项，并管理它们的状态与事件。
+
+1. 控制框架核心关系：
+   `video_device` -> `v4l2_ctrl_handler` -> `v4l2_ctrl`
+
+2. 核心结构-`struct v4l2_ctrl_handler`
+   `struct v4l2_ctrl_handler` 是控制框架的管理者，每个 `V4L2` 设备（如 `v4l2_device` 或 `video_device`） 通常关联一个 `handler`，用于管理其所有控制项。
+   - 主要职责：
+     - 控制项管理：维护一个控制项（`struct v4l2_ctrl`）的链表或哈希表；
+     - 锁与同步：提供内部锁机制，保证多线程访问安全；
+     - 验证与回调：验证控制值有效性，并调用驱动注册的回调函数；
+     - 内存管理：负责控制项内存的分配与释放；
+   - API
+        ```c
+        // 初始化 handler
+        void v4l2_ctrl_handler_init(struct v4l2_ctrl_handler *hdl, unsigned nr_of_controls_hint);
+
+        // 释放 handler
+        void v4l2_ctrl_handler_free(struct v4l2_ctrl_handler *hdl);
+
+        // 将 handler 关联到 v4l2_device 或 video_device
+        ```
+
+3. 自定义控制项
+   除了 `V4L2` 自定义的标准控制项（如 `V4L2_CID_BRIGHTNESS`），驱动开发者可以根据硬件特性自定义控制项（`V4L2_CID_PRIVATE_BASE` 及以上）。
+   - 创建自定义控制项
+        ```c
+        struct v4l2_ctrl_config custom_ctrl_cfg = {
+            .ops    = &my_ctrl_ops,
+            // 自定义控制项的 ID 应从 V4L2_CID_PRIVATE_BASE(0x08000000) 开始，避免与标准 ID 冲突
+            // 同时，应在驱动中提供清晰的文档说明其含义与取值范围
+            .id     = V4L2_CID_PRIVATE_BASE + 0,
+            .name   = "My Custom Control",
+            .type   = V4L2_CTRL_TYPE_INTEGER,
+            .min    = 0,
+            .max    = 100,
+            .step   = 1,
+            .def    = 50,
+            .flags  = V4L2_CTRL_FLAG_SLIDER,
+        };
+        struct v4l2_ctrl *custom_ctrl;
+        custom_ctrl = v4l2_ctrl_new_custom(&handler, &custom_ctrl_cfg, NULL);
+        ```
+   - 控制项类型：
+     - `V4L2_CTRL_TYPE_INTEGER`: 整型
+     - `V4L2_CTRL_TYPE_BOOLEAN`: 布尔型
+     - `V4L2_CTRL_TYPE_MENU`: 菜单型
+     - `V4L2_CTRL_TYPE_BUTTON`: 按钮型
+     - `V4L2_CTRL_TYPE_INTEGER64`: 64 位整型
+     - `V4L2_CTRL_TYPE_CTRL_CLASS`: 控制类
+   - 菜单型控制项（`V4L2_CTRL_TYPE_MENU`）
+        允许用户从一组预定义的选项中选择。常用于模式选择、预设配置等场景。
+        ```c
+        static const char * const my_menu[] = {
+            "Mode 1: standard",
+            "Mode 2: Vivid",
+            "Mode 3: Soft",
+            "Mode 4: Monochrome",
+            NULL,
+        };
+
+        static const struct v4l2_ctrl_config menu_ctrl_cfg = {
+            .ops    = &my_ctrl_ops,
+            .id     = V4L2_CID_PRIVATE_BASE + 1,
+            .name   = "Color Mode",
+            .type   = V4L2_CTRL_TYPE_MENU,
+            .min    = 0,
+            .max    = ARRAY_SIZE(my_menu) - 2,  // 排除 NULL 项，这里 min 和 max 应该对应的是索引值
+            .def    = 0,
+            .menu_skip_mask = 0,    // 可以跳过某些项
+            .qmenu  = my_menu,
+        };
+
+        // 菜单操作 API
+        // 1. v4l2_ctrl_new_std_menu(): 创建标准菜单项，如曝光模式
+        // 2. v4l2_ctrl_new_int_menu(): 创建整型值菜单
+        // 3. v4l2_ctrl_get_menu(): 根据 ID 获取标准菜单名称数组
+        ```
+
+4. 控制事件
+   控制框架支持事件通知机制，当控制项的值发生变化、控制项被添加或删除时，可以通知用户空间。
+   - 事件类型
+     - `V4L2_EVENT_CTRL_CH_VALUE`: 控制值发生变化；
+     - `V4L2_EVENT_CTRL_CH_FLAGS`: 控制标志发生变化；
+     - `V4L2_EVENT_CTRL_CH_RANGE`: 控制范围发生变化；
+     - `V4L2_EVENT_CTRL_ADD`: 控制项被添加；
+     - `V4L2_EVENT_CTRL_DEL`: 控制项被删除；
+   - 驱动侧事件通知
+        ```c
+        // 当控制值发生变化时，调用此函数通知框架
+        void v4l2_ctrl_notify(struct v4l2_ctrl *ctrl, v4l2_ctrl_notify_fnc notify, void *priv);
+
+        // 示例：在控制操作回调中触发事件
+        static int my_ctrl_set(struct v4l2_ctrl *ctrl) {
+            switch (ctrl->id) {
+                case V4L2_CID_BRIGHTNESS:
+                    hardware_set_brightness(ctrl->val);
+                    v4l2_ctrl_notify(ctrl, NULL, NULL); // 通知值变化
+                    break;
+            }
+            return 0;
+        }
+        ```
+
+5. 示例-创建一个完整的控制项
+   展示如何在驱动中初始化一个 `handler`，并添加标准控制项与自定义控制项
+   ```c
+   #include <media/v4l2-ctrls.h>
+
+   static const struct v4l2_ctrl_ops my_ctrl_ops = {
+    .s_ctrl = my_ctrl_set,
+    .g_volatile_ctrl = my_ctrl_get,
+   };
+
+   int my_v4l2_init(struct my_device *dev) {
+        struct v4l2_ctrl_handler *hdl = &dev->ctrl_handler;
+        int ret;
+
+        // 1. 初始化 handler 
+        v4l2_ctrl_handler_init(hdl, 10);
+
+        // 2. 添加标准控制项
+        v4l2_ctrl_new_std(hdl, &my_ctrl_ops, V4L2_CID_BRIGHTNESS, 0, 255, 1, 128);
+        v4l2_ctrl_new_std(hdl, &my_ctrl_ops, V4L2_CID_CONTRAST, 0, 127, 1, 64);
+        v4l2_ctrl_new_std_menu(hdl, &my_ctrl_ops, V4L2_CID_POWER_LINE_FREQUENCY, V4L2_CID_POWER_LINE_FREQUENCY_60HZ, 0, V4L2_CID_POWER_LINE_FREQUENCY_50HZ);
+
+        // 添加自定义控制项
+        struct v4l2_ctrl_config custom_cfg = {
+            .ops = &my_ctrl_ops,
+            .id = V4L2_CID_PRIVATE_BASE,
+            .name = "Custom Sharpness",
+            .type = V4L2_CTRL_TYPE_INTEGER,
+            .min = 0, 
+            .max = 10,
+            .step = 1,
+            .def = 5,
+        };
+        v4l2_ctrl_new_custom(hdl, &custom_cfg, NULL);
+
+        // 4. 检查错误并关联 handler
+        if (hdl->error) {
+            ret = hdl->error;
+            v4l2_ctrl_handler_free(hdl);
+            return ret;
+        }
+        dev->v4l2_dev.ctrl_handler = hdl;
+        // 或 video_set_ctrl_handler(dev->vdev, hdl);
+
+        // 5. 可选：设置默认值到硬件
+        v4l2_ctrl_handler_setup(hdl);
+        return 0;
+   }
+   ```
+
+6. 总结
+   - 核心要点：
+     - 一个设备，一个 `handler`：每个 `V4L2` 设备应拥有独立的控制 `handler`；
+     - 合理使用控制类型：根据参数特性选择整数、布尔、菜单或按钮类型；
+     - 验证与回调：在 `s_ctrl` 会调中验证值并配置硬件；
+     - 事件通知：重要状态变化应通过事件机制通知用户空间；
+   - 常见陷阱：
+     - 忘记检查 `hdl-error` 导致控制项添加失败；
+     - 自定义控制项 ID 与标准 ID 冲突；
+     - 未正确处理控制项的并发访问；
+     - 菜单项数组未以 `NULL` 结尾；
+   - 建议：
+     - 对于复杂的设备，可以考虑将控制项分组（使用 `V4L2_CTRL_CLASS_*`），并利用 `v4l2_ctrl_new_std_cluster()` 创建关联控制项集群，以优化用户体验与硬件配置效率；
+
 ## 内存类型与缓冲区队列
 视频缓冲区管理是 `V4L2` 子系统的核心，它负责在用户空间和内核空间之间高效、稳定地传出视频数据。涉及到三种内存类型和用于管理这些缓冲区地核心数据结构 `struct vb2_queue`；
 
@@ -192,6 +431,10 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
    ```c
    // struct vb2_mem_ops: 用于操作内存
    // struct vb2_ops: 用于操作缓存区
+   ```
+
+3. `v4l2_subdev` 操作
+   ```c
    ```
 
 ### 调用流程
@@ -480,6 +723,78 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
         ```
     - 常见问题与解决方案
       ![](../../../img/subsys-v4l2/260302-001742.png)
+
+### v4l2_subdev_ops 操作集
+`struct v4l2_subdev_ops` 是子设备驱动中最核心的结构体，它定义了一系列回调函数指针，用于实现子设备的各种操作。这些操作被分组到不同的子结构体中。
+
+1. 主要操作子结构体
+    | 结构体  | 描述   | 常用函数示例 |
+    | ------------ | ------------------------ | -------- | 
+    | `v4l2_subdev_core_ops` | 核心操作：日志、初始化、中断处理、IOCTL 等   | `log_status`、`reset`、`ioctl` |
+    | `v4l2_subdev_video_ops` | 视频流操作：设置格式、帧率、裁剪 等   | `s_stream`、`g_fmt`、`s_fmt` |
+    | `v4l2_subdev_pad_ops` | Pad 操作：用于 `media framework`，处理数据流连接 | `get_fmt`、`set_fmt`、`link_validate` |
+    | `v4l2_subdev_sensor_ops` | 传感器特定操作：获取曝光、增益等   | `g_skip_frames`|
+
+2. 示例
+   ```c
+   #include <media/v4l2-subdev.h>
+
+   // 子设备可以通过自定义的 IOCTL 命令来扩展功能，这些命令通常通过 v4l2_subdev_core_ops 中的 .ioctl 回调实现
+   // 子设备 IOCTL 通常由主设备驱动调用，用户空间也可以通过 VIDIOC_SUBDEV_QUERYCAP 等标准子设备 IOCTL 与子设备交互
+   
+   // 定义私有 IOCTL 命令
+   #define MY_SUBDEV_GET_CONFIG     _IOWR('V', BASE_VIDIOC_PRIVATRE + 0, struct my_config)
+   #define MY_SUBDEV_SET_PARAM      _IOW('V', BASE_VIDIOC_PRIVATE + 1, struct my_param)
+
+   // ioctl 回调实现
+   static long my_subdev_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg) {
+    switch (cmd) {
+        case MY_SUBDEV_GET_CONFIG: {
+            struct my_config *cfg = arg;
+            // 从硬件读取配置并填充 cfg
+            cfg->exposure = read_exposure_reg(sd);
+            cfg->gain = read_gain_reg(sd);
+            return 0;
+        }
+        case MY_SUBDEV_SET_PARAM: {
+            struct my_param *param = arg;
+            // 根据 param 设置硬件参数
+            write_exposure_reg(sd, param->exposure);
+            write_gain_reg(sd, param->gain);
+            return 0;
+        }
+        default:
+            return -ENOTTY;     // 未知命令
+    }
+   }
+
+   static const struct v4l2_subdev_video_ops my_subdev_video_ops = {
+    .s_stream = my_subdev_s_stream,
+    .g_frame_interval = my_subdev_g_frame_interval,
+    .s_frame_interval = my_subdev_s_frame_interval,
+   };
+
+   static const struct v4l2_subdev_core_ops my_subdev_core_ops = {
+    .log_status = my_subdev_log_status,
+    .reset = my_subdev_reset,
+    .ioctl = my_subdev_ioctl,
+   };
+
+   static const struct v4l2_subdev_ops my_subdev_ops = {
+    .core = &my_subdev_core_ops,
+    .video = &my_subdev_video_ops,
+   };
+
+   // 在 probe 函数中初始化子设备
+   static int my_subdev_probe(struct i2c_client *client, const struct i2c_device_id *id) {
+    struct v4l2_subdev *sd;
+    sd = devm_kzalloc(&client->dev, sizeof(*sd), GFP_KERNEL);
+    v4l2_i2c_subdev_init(sd, client, &my_subdev_ops);
+    // 其他初始化
+    // ...
+    return 0;
+   }
+   ```
 
 ## 图像格式与色彩空间
 ### 像素格式
