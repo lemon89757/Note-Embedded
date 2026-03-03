@@ -1787,6 +1787,179 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
    - 确保 DMA 缓冲区已正确缓存同步（`dma_sync_for_device/cpu`）；
    - 在 `stop_streaming` 中使用 `dmaengine_terminate_sync()` 确保安全停止；
 
+### 中断处理
+在摄像头驱动中，中断处理是实现高效、稳定图像采集的核心机制。它负责在特定硬件事件发生时通知 CPU，从而触发相应的处理程序，确保图像数据的准确捕获与传输。
+
+1. 帧同步
+   帧同步是通过一系列有序的中断，**协调图像传感器、图像处理单元（`ISP`）和 `DMA` 控制器之间的工作**，保证每一帧图像数据完整、无撕裂地传递到用户空间。
+
+   - 简化数据流
+        图像传感器 -> `ISP`/控制器 -> `DMA` 引擎 -> 内存缓冲区
+        - [ ] 数据流中 `ISP` 和 `CSI` 它们一定存在吗？若两者同时存在，它们的顺序关系是什么？
+
+2. 关键中断类型
+   摄像头驱动主要涉及以下三种关键中断，它们按顺序协作完成一帧图像的采集：
+   - 垂直同步（`VSYNC`）中断
+   - 帧完成（`FRAME DONE`）中断
+   - `DMA` 完成（`DMA DONE`）中断
+    | 中断类型 | 触发时机 | 主要作用 | 软件响应动作 |
+    | ----- | ----- | ----- | ---- |
+    | `VSYNC` 中断 | 传感器开始输出新的一帧时 | 帧开始的标志，同步时序 | 重置行计数器，准备接收新帧 |
+    | 帧完成中断 | 传感器完成一帧所有行的曝光与读出 | 表示一帧原始数据已经就绪 | 启动 `ISP` 处理或直接启动 `DMA` 传输 |
+    | `DMA` 完成中断 | `DMA` 控制器将一帧数据完整搬运到内存后 | 表示数据已安全存入内存缓冲区 | 将缓冲区放入“完成队列”（`Done que`），通知用户空间 |
+
+    不同硬件平台和传感器，其中断名称和具体行为可能略有差异，但基本遵循“开始-就绪-传输完成”这一逻辑书顺序。
+
+3. 中断处理流程
+   - `VSYNC` 中断处理
+        `VSYNC`（垂直同步）信号是**图像传感器输出**的时序基准。其下降沿或上升沿（取决于硬件设计）通常触发中断，标志着一帧数据的开始。
+
+        - 硬件行为：
+            传感器完成上一帧输出，消隐期结束，开始输出新帧的第一行；
+        - 驱动处理：
+           1. 清除可能残留的状态标志；
+           2. 重置内部行计数器；
+           3. 如果使用“乒乓缓冲区”，在此切换下一个缓冲区准备接收；
+           4. 可能启动一些与帧率相关的控制逻辑；
+        
+        ```c
+        // 示例：VSYNC 中断处理函数骨架
+        static irqreturn_t sensor_vsync_irq_handler(int irq, void *dev_id) {
+            struct sensor_device *sensor = (struct sensor_device*)dev_id;
+
+            // 1. 读取并清除中断状态寄存器
+            u32 int_status = read1(sensor->base + INT_STATUS_REG);
+            if (!(int_status & VSYNC_INT_MASK)) {
+                return IRQ_NONE;
+            }
+            write1(VSYNC_INT_MASK, sensor->base + INT_BASE_REG);
+
+            // 2. 重置帧内行计数器
+            sensor->current_line = 0;
+
+            // 3. 切换至下一个 DMA 缓冲区（乒乓缓冲策略）
+            if (sensor->use_pingpong) {
+                sensor->active_buffer = (sensor->active_buffer == &sensor->buf0) ? &sensor->buf1 : &sensor->buf0;
+                // 重新配置 DMA 目标地址
+                config_dma_destination(sensor->active_buffer->dma_addr);
+            }
+
+            // 4. 唤醒可能等待 VSYNC 的线程
+            wake_up_interruptible(&sensor->vsync_waiting);
+
+            return IRQ_HANDLED;
+        }
+        ```
+    - 帧完成中断处理
+        当传感器将一帧的所有像素数据都读出到其内部总线后，会触发此中断。对于集成 `ISP` 的 `SOC`，此时原始数据已可供 `ISP` 进行后续处理。
+        - [ ] 从 `VSYNC` 中断到帧完成中断这段时间的数据保存在哪里呢？是传感器内部？还在外部已经规划了一块空间来保存传感器的原始数据呢？如果是后者，又是如何规划/传感器和外部通信的呢？
+
+        - 硬件行为：
+            最后一行的像素数据被送出。
+        - 驱动处理：
+            1. 确认帧数据完整（无丢失行）；
+            2. 如果驱动直接负责 `DMA`，则在此启动 `DMA` 传输；
+            3. 如果由 `ISP` 处理，则通知 `ISP` 单元开始工作；
+            - [ ] `ISP` 的数据来源不是通过 `DMA` 转运的吗？而是直接处理原始的未经转运的传感器数据？
+
+    - `DMA` 完成中断处理
+        这是数据链路中最后一步的中断，标志着图像数据已安全抵达内存，可供 `CPU` 或用户空间应用程序访问。
+
+        - 硬件行为：
+            `DMA` 引擎的传输计数器归零。
+        - 驱动处理：
+            1. 将已填满的缓冲区从“活动队列”移至“完成队列”；
+            2. 更新缓冲区状态为 `V4L2_BUF_STATE_DONE`；
+            3. 通过 `V4L2` 框架的 `vb2_buffer_done()` 函数通知核心层；
+            4. 如果有用户进程正在等待数据（如执行 `read()` 或 `select()`），则唤醒它；
+            5. 准备下一个缓冲区并重新启动 `DMA` （对于流式传输）；
+
+        ```c
+        // 示例：DMA 完成中断处理关键部分
+        static irqreturn_t dma_done_irq_handler(int irq, void *dev_id) {
+            struct my_driver *drv = dev_id;
+            struct vb2_v4l2_buffer *vbuf;
+
+            // 1. 获取当前已经传输完成的缓冲区
+            vbuf = drv->cur_vb;
+            if (!vbuf) {
+                // 错误处理：没有活动的缓冲区
+                return IRQ_HANDLED;
+            }
+
+            // 2. 标记缓冲区状态为 DONE
+            vbuf->vb2_buf.timestamp = ktime_get_ns();
+            vbuf->sequence = drv->frame_sequence++;     // 帧序列号递增
+            vbuf->field = V4L2_FIELD_NONE;
+
+            // 3. 通知 V4L2 核心和 vb2 框架此缓冲区已完成
+            vb2_buffer_done(&vbuf->vb2_buffer, VB2_BUF_STATE_DONE);
+
+            // 4. 从驱动内部活动队列移除
+            drv->cur_vb = NULL;
+
+            // 5. 尝试从“等待队列”获取下一个缓冲区并启动 DMA
+            if (!list_empty(&drv->buf_list)) {
+                struct buffer_data *next_buf = list_first_entry(&drv->buf_list, struct buffer_data, list);
+                list_del(&next_buf->list);
+                drv->cur_vb = &next_buf->vbuf;
+                start_dma_transfer(drv, next_buf->dma_addr);
+            }
+
+            // 6. 唤醒可能等待帧的 poll/select 调用
+            wake_up_interruptible(&drv->frame_waitq);
+
+            return IRQ_HANDLED;
+        }
+        ```
+        - [ ] 既然要通知 V4L2 核心和 vb2 框架，为什么不在这些的相关处理函数中才唤醒等待的 poll/select ？
+        - [ ] 为什么要直接开启下一个缓冲区的 DMA 传输，下一个缓冲区一定转杯好了吗？
+
+4. 帧同步与缓冲区管理
+    三个中断的协同工作构成了完整的帧同步机制，驱动必须妥善管理多个缓冲区，以实现无丢帧的连续采集。
+
+    - 缓冲区队列管理策略（通常由 `V4L2 vb2` 框架协助管理）：
+      - 空闲缓冲区（`V4L2_BUF_STATE_QUEUED`）：已由用户空间（`QBUF`），等待被驱动使用；
+      - 活动缓冲区（`V4L2_BUF_STATE_ACTIVE`）：缓冲区已被 `DMA` 使用，用于接收数据；
+      - 完成缓冲区（`V4L2_BUF_STATE_DONE`）：数据已就绪，等待用户空间取出（`DQBUF`）；
+    - `DMA` 完成中断的处理函数是状态转换的关键，它将缓冲区从 `ACTIVE` 移至 `DONE`；
+
+5. 调试
+   - 中断丢失或风暴
+     - 现象：系统卡死、帧率极低、内核打印大量中断消息；
+     - 可能原因：
+          1. 中断处理函数中没有正确清除硬件中断标志；
+          2. 中断共享配置错误；
+          3. 处理时间过长，导致后续中断被合并或丢失；
+     - 调试：在中断处理函数开头和结尾增加打印，检查执行频率。使用 `cat /proc/interrupts` 观察中断计数是否异常。
+   - 帧撕裂或不完整
+     - 现象：图像上半部分和下半部分内容不连续；
+     - 可能原因：
+         1. `VSYNC` 中断处理中缓冲区切换时机错误，导致一帧数据写入了两个不同的缓冲区。
+     - 调试：确保在 `VSYNC` 中断中切换缓冲区，并且在整个帧传输完成前，`DMA` 目标地址不再改变。
+   - 性能优化
+     - 将中断处理函数分为上半部和下半部。上半部只做最紧要的操作（如清除标志、保存数据），耗时的操作（如缓冲区队列管理、唤醒进程）放到工作队列（`workqueue`）或任务软中断（`tasklet`）中执行；
+     - **使用 `DMA` 分散-聚集（`Scatter-Gather`）功能传输不连续的物理内存块**；
+     - 合理设置缓冲区数量，太少容易丢帧，太多增加延迟和内存占用；
+        ```c
+        static void dma_done_work_handler(struct work_struct *work) {
+            struct my_driver *drv = container_of(work, struct my_driver, dma_work);
+            // 这里执行耗时的缓冲区处理逻辑
+            process_done_buffer(drv);
+        }
+
+        // 在 DMA 中完成中断上半部分
+        static irqreturn_t dma_done_irq_top_half(int irq, void *dev_id) {
+            struct my_driver *drv = dev_id;
+            // 1. 立即清除中断
+            clear_interrupt();
+            // 2. 禁止再次触发（如果需要）
+            // 3. 调度下半部工作队列
+            schedule_work(&drv->dma_work);
+            return IRQ_HANDLED;
+        }
+        ```
+
 ## 图像格式与色彩空间
 ### 像素格式
 在 `V4L2` 子系统中，像素格式（`Pixel Format`）定义了图像数据在内存中的存储方式。**它是驱动与应用程序之间数据交换的“协议”**。`V4L2` 使用 `struct v4l2_fmtdesc` 和 `struct v4l2_format` 来描述和协商格式。
