@@ -390,6 +390,39 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
     void *drv_priv;                     // 驱动私有数据
     // ... 其他字段
   }
+
+  struct v4l2_buffer {
+        __u32 index;
+        __u32 type;
+        __u32 bytesused;
+        __u32 flags;
+        __u32 field;
+        struct timeval timestamp;
+        struct v4l2_timecode timecode;
+        __u32 sequence;
+        __u32 memory;
+        union {
+            __u32 offset;
+            unsigned long userptr;
+            struct v4l2_plane *planes;
+            __s32 fd;
+        } m;
+        __u32 length;
+        __u32 reserved2;
+        __u32 reserved;
+    };
+
+    struct v4l2_plane {
+        __u32 bytesused;
+        __u32 length;
+        union {
+            __u32 mem_offset;
+            unsigned long userptr;
+            __s32 fd;
+        } m;
+        __u32 data_offset;
+        __u32 reserved[11];
+    };
   ```
 
 - 核心操作流程
@@ -424,6 +457,22 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
   - 入队（`buf_queue`）：用户空间通过 `VIDIOC_QBUF` 将缓冲区放入驱动队列；
   - 出队（`buf_done`）：**DMA 传输完成中断中，驱动程序调用 `vb2_buffer_done` 通知核心缓冲区数据就绪**；
   - 轮转策略：通常采用 `FIFO`（先进先出）方式，确保缓冲区按顺序被填充和消费。
+
+- 多平面格式（`Multi-Plane Formats`）
+    多平面格式（如 `V4L2_PIX_FMT_NV12`、`V4L2_PIX_FMT_YUV420`）将图像的亮度（`Y`）和色度（`UV`）分量存储再不同的内存平面内，这对于视频编码、零拷贝传输和高分辨率处理至关重要。
+    - [ ] 补充：多平面缓冲区内存布局
+
+    - 多平面缓冲区操作流程：
+      1. 查询能力：通过 `VIDIOC_QUERYCAP` 检查设置是否支持 `V4L2_CAP_VIDEO_CAPTURE_MPLANE`；
+      2. 设置格式：使用 `VIDIOC_S_FMT` 并指定 `type=V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE`；
+      3. 申请缓冲区：调用 `VIDIOC_REQBUFS`，设置 `count` 和 `memory=V4L2_MEMORY_MMAP`；
+      4. 内存映射：对每个 `plane` 的每个缓冲区执行 `mmap`；
+      5. 入队/出队：使用 `VIDIOC_QBUF` 和 `VIDIOC_DQBUF` 管理缓冲区循环；
+    - 关键优势
+      - 较少内存拷贝；
+      - 提高缓存效率；
+      - 支持复杂格式（如 10 位 `YUV`）
+      - 便于硬件加速
 
 
 ## Media Controller 框架
@@ -2251,6 +2300,117 @@ int main() {
 }
 ```
 
+### HDR、摄像头数据标定
+1. `HDR`
+   `HDR` （高动态范围）技术通过再同一场景中捕捉多张不同曝光度的图像并合成，显著扩展图像的动态范围，保留更多亮部和暗部细节。
+
+   - `V4L2 HDR` 处理架构
+        图像传感器（多曝光输出） -> `ISP` 处理单元（`HDR` 合成、色调映射） -> `V4L2` 控件与格式（`VIDIOC_S_EXT_CTRLS`） -> 用户空间应用（获取 `HDR` 图像）
+   - `V4L2 HDR` 控制接口
+        | 控件 ID | 控件名称 | 类型 | 描述 |
+        | ------------ | ------------------------ | -------- | -------- |
+        | `V4L2_CID_WIDE_DYNAMIC_RANGE` | `WDR` 模式 | 布尔/菜单 | 启用/禁用宽动态范围模式 |
+        | `V4L2_CID_IMAGE_STABILIZATION` | 图像稳定 | 布尔 | HDR 常需与防抖协同 |
+        | `V4L2_CID_EXPOSURE_AUTO` | 自动曝光 | 菜单 | 设置为 `V4L2_EXPOSURE_APERTURE_PRIORITY` |
+        | `V4L2_CID_AUTOGAIN` | 自动增益 | 布尔 | 控制 ISO 自动调整 |
+    - `HDR` 数据流示例
+        ```c
+        // 设置 HDR 模式
+        struct v4l2_control ctl = {0};
+        ctrl.id = V4L2_CID_WIDE_DYNAMIC_RANGE;
+        ctl.value = 1;      // 启用 HDR
+        if (ioctl(fd, VIDIOC_S_CTRL, &ctl) == -1) {
+            perror("Failed to set HDR mode");
+        }
+
+        // 设置多曝光序列
+        struct v4l2_ext_controls ctrls = {0};
+        struct v4l2_ext_control ext_ctrl[3] = {0};
+
+        ext_ctrl[0].id = V4L2_CID_EXPOSURE_ABSOLUTE;
+        ext_ctrl[0].value = 100;        // 短曝光
+        ext_ctrl[1].id = V4L2_CID_EXPOSURE_ABSOLUTE;
+        ext_ctrl[1].value = 1000;        // 中曝光
+        ext_ctrl[2].id = V4L2_CID_EXPOSURE_ABSOLUTE;
+        ext_ctrl[2].value = 10000;        // 长曝光
+
+        ctrls.controls = ext_ctrl;
+        ctrls.count = 3;
+        if (ioctl(fd, VIDIOC_S_EXT_CTRLS, &ctrls) == -1) {
+            perror("Failed to set exposure bracketing");
+        }
+        ```
+    - 实现要点：需要传感器支持多曝光输出，`ISP` 具备 `HDR` 合成能力，驱动程序正确暴漏控件。
+
+2. 摄像头标定数据
+   摄像头标定数据包括内参（焦距、主点、畸变系数）和外参（旋转、平移），对于计算机视觉应用（如 `AR`、`SLAM`）至关重要。
+   - 标定数据类型与存储
+     - 内参矩阵：3x3 矩阵，包含焦距 `(fs,fy)` 和光学中心 `(cx, cy)`；
+     - 畸变系数：径向畸变 `(k1, k2, k3)` 和切向畸变 `(p1, p2)`；
+     - 外参矩阵：3x4 矩阵，描述相机在世界坐标系中的位置；
+     - 传感器特性：像素尺寸、色彩滤波阵列（`CFA`）模式、信噪比
+   - 摄像头标定数据流：
+     - 传感器 `EEPROM` -> 内核驱动解析 -> `V4L2` 控件/元数据；
+     - 标定数据结构示例：`{"K":[fx,0,cx;0,fy,cy;0,0,1], "dist":[k1,k2,p1,p2,k3]}`
+   - 标定数据访问方法：
+        | 方法 | 接口 | 描述 | 适用场景 |
+        | ------------ | ------------------------ | -------- | -------- |
+        | 专用控件 | `VIDIOC_G_CTRL`/`VIDIOC_S_CTRL` | 定义特定 ID 的控件获取标定参数 | 简单标定数据 |
+        | 扩展控件 | `VIDIOC_G_EXT_CTRLS` | 支持复杂数据结构 | 矩阵、数组等 |
+        | 元数据缓冲区 | `V4L2_BUF_TYPE_META_CAPTURE` | 通过单独缓冲区传递 | 实时流式标定数据 |
+        | 私有 IOCTL | 自定义 `_IOWR` | 厂商特定拓展 | 非标准复杂数据 |
+   - 标定数据获取示例
+        ```c
+        // 通过扩展控件获取内参矩阵
+        struct v4l2_ext_controls ctrls = {0};
+        struct v4l2_ext_control ext_ctrl = {0};
+        float intrinsic_matrix[9] = {0};
+
+        ext_ctrl.id = V4L2_CID_CAMERA_INTRINSIC_MATRIX; // 自定义 ID
+        ext_ctrl.size = sizeof(intrinsic_matrix);
+        ext_ctrl.ptr = intrinsic_matrix;
+
+        ctrls.controls = &ext_ctrl;
+        ctrls.count = 1;
+
+        if (ioctl(fd, VIDIOC_G_EXT_CTRLS, &ctrls) == 0) {
+            printf("内参矩阵：\n");
+            for (int i = 0; i < 3; ++i) {
+                printf("[%8.3f %8.3f %8.3f]\n", intrinsic_matrix[i * 3], intrinsic_matrix[i * 3 + 1], intrinsic_matrix[i * 3 + 2]);
+            }
+        }
+
+        // 通过元数据缓冲区获取（现代方式）
+        struct v4l2_buffer buf = {0};
+        struct v4l2_plane planes[1] = {0};
+        buf.type = V4L2_BUF_TYPE_META_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.m.planes = planes;
+        buf.length = 1;
+
+        // 入队和出队操作获取元数据
+        ioctl(fd, VIDIOC_DQBUF, &buf);
+        struct camera_metadata *meta = (struct camera_meta_data*)planes[0].m.userptr;
+        process_calibration_data(meta);
+        ```
+   - 标定数据应随着摄像头出厂烧录，驱动启动时加载，通过标准 `V4L2` 接口暴漏，支持动态更新（如温度补偿）。
+
+3. 总结
+   现代摄像头系统将多 `plane` 格式、`HDR` 和标定数据紧密结合，提供高质量的图像采集和处理能力。
+   - 典型工作流程
+        1. 初始化：加载标定数据，配置 `HDR` 模式，设置多 `plane` 格式；
+        2. 采集：使用多缓冲区循环捕获多曝光图像；
+        3. 处理：`ISP` 执行 `HDR` 合成、畸变校正（使用标定数据）；
+        4. 输出：通过多 `plane` 缓冲区传递 `YUV` 图像和元数据（含标定信息）
+        5. 应用：计算机视觉算法使用校正后的图像进行精准分析；
+   - 驱动开发要点：
+        1. 实现 `v4l2_ioctl_ops` 中的多 `plane` 相关回调（`vidioc_reqbufs`、`vidioc_qbuf` 等）；
+        2. 定义并注册 `HDR` 相关控件（`v4l2_ctrl_handler`）；
+        3. 从传感器 `EEPROM` 或固件加载标定数据，并通过控件或元数据暴露；
+        4. 确保 `DMA` 缓冲区正确配置以支持多 `plane` 零拷贝；
+        5. 实现 `ISP` 硬件加速的 `HDR` 合成流水线；
+   - 趋势：AI 辅助标定、实时动态 `HDR`、多摄像头同步标定、云标定数据库集成。
+
 ## 实战
 ### USB 摄像头（UVC）驱动框架解析
 `USB Video Class, UVC` 是 `USB Implementers Forum` 定义的标准协议，用于规范 USB 视频设备（如摄像头）与主机之间的通信。Linux 内核中的 `UVC` 驱动是一个**复合驱动**，它基于 `V4L2` 框架，**负责将标准的 `UVC` 协议数据转换为 `V4L2` 内核 API 可识别的格式**。
@@ -2486,3 +2646,7 @@ int main() {
 - 使用 `DMABUF` 将视频流直接送至显示或编码硬件；
 - 为实时线程设置适当的调度策略与优先级；
 - 监控帧间隔与处理实践，持续调优；
+
+## 参考
+1. [zhihu-一文分析 Linux v4l2 框架](https://zhuanlan.zhihu.com/p/613018868?next=https%3A%2F%2Fzhuanlan.zhihu.com)
+2. [Linux 驱动-v4l2 驱动框架](https://baron-z.cn/2025/03/10/linux%E9%A9%B1%E5%8A%A8-V4L2%E9%A9%B1%E5%8A%A8%E6%A1%86%E6%9E%B6/#6-zhi-chi-jiang-dui-lie-fang-ru-huan-chong-qu)
