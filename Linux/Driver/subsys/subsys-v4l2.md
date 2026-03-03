@@ -377,7 +377,7 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
 - 数据结构
   ```c
   struct vb2_queue {
-    enum v4l2_buf_tye type;
+    enum v4l2_buf_type type;
     enum v4l2_memory memory;
     unsigned int io_modes;
     unsigned int num_buffers;
@@ -588,6 +588,9 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
     - `VIDIOC_STREAMON`：启动视频流，开始采集数据；
     - `VIDIOC_STREAMOFF`：停止视频流，停止采集数据；
     - `VIDIOC_DEFAULT`：处理未定义的 `ioctl` 请求，默认操作；
+    - `VIDIOC_S_PARM`：
+    - `VIDIOC_ENUM_FRAMESIZES`：
+    - `VIDIOC_ENUM_FRAMEINTERVALS`：
 
 3. `VIDIOC_QUERYCAP`-查询设备能力
    准确填写驱动名、设备名、能力标志
@@ -764,7 +767,161 @@ if (ioctl(fd, VIDIOC_REQBUFS, &reqbuf) == - 1) {
     补充：
     4. `ioctl` 的 `VIDIOC_TRY_FMT` 与 `VIDIOC_S_FMT` 类似，但是只测试格式而不实际配置硬件，常用于应用预览可用格式；
 
-6. 建议：
+6. 动态分辨率与帧率切换
+   - [ ] 这部分是属于 ioctl 还是属于 controls ?
+   在现代摄像头应用中，根据应用场景需求动态切换分辨率和帧率是核心功能之一。`V4L2` 子系统提供了一套标准的 IOCTL 接口，允许用户空间查询和设置摄像头的分辨率和帧率。
+
+   - 涉及的三个关键 IOCTL：
+     - `VIDIOC_S_PARM`：设置流参数（包括帧率）
+     - `VIDIOC_ENUM_FRAMESIZES`：枚举支持的分辨率
+     - `VIDIOC_ENUM_FRAMEINTERVALS`：枚举支持的帧间隔
+   - `VIDIOC_ENUM_FRAMESIZES`
+        此 IOCTL 用于查询摄像头设备支持的所有图像分辨率。它通常与像素格式（`pixel format`）结合使用，因为不同的格式可能支持不同的分辨率。
+        - 数据结构
+            ```c
+            struct v4l2_frmsizeenum {
+                __u32 index;                // 枚举索引，0 开始
+                __u32 pixel_format;         // 像素格式（如 V4L2_PIX_FMT_YUYV）
+                __u32 type;                 // 帧尺寸类型（离散、步进、连续）
+                union {
+                    struct v4l2_frmsize_discrete discrete;  // 离散尺寸
+                    struct v4l2_frmsize_stepwise stepwise;  // 步进尺寸
+                };
+                __u32 reserved[2];
+            };
+
+            struct v4l2_frmsize_discrete {
+                __u32 width;
+                __u32 height;
+            };      // 像素宽度和高度
+            ```
+        - 使用流程
+            1. 设置 `pixel_format` 为感兴趣的像素格式；
+            2. 从 `index = 0` 开始循环调用 `VIDIOC_ENUM_FRAMESIZES`；
+            3. 驱动返回成功直到返回 `-EINVAL` 错误，表示枚举结束；
+            4. 根据 `type` 字段解析分辨率信息（离散、步进或连续）；
+        - 步进类型（`V4L2_FRMSIZE_TYPE_STEPWISE`）表示分辨率可以在最小/最大值之间按步进值变化，常用于缩放传感器；
+    - `VIDIOC_ENUM_FRAMEINTERVALS`
+        在选定分辨率后，此 IOCTL 用于查询该分辨率下支持的帧间隔（即帧率的倒数）。帧间隔通常以分数形式表示（分子/分母）。
+        - 数据结构
+            ```c
+            struct v4l2_frmivalenum {
+                __u32 index;            // 枚举索引
+                __u32 pixel_format;     // 像素格式
+                __u32 width;            // 已选宽度
+                __u32 height;           // 已选高度
+                __u32 type;             // 帧间隔类型（离散、步进、连续）
+                union {
+                    struct v4l2_fract discrete;     // 离散帧间隔
+                    struct v4l2_frmival_stepwise stepwise;  // 步进帧间隔
+                };
+                __u32 reserved[2];
+            };
+
+            struct v4l2_fract {
+                __u32 numerator;        // 分子（通常为 1）
+                __u32 denominator;      // 分母（帧率，如 30 表示 30fps）
+            };
+            ```
+        - 调用序列
+            先枚举分辨率 -> 针对每个分辨率枚举帧间隔 -> 选择合适的分辨率、帧率组合。
+        - 典型分辨率和帧率
+            | 分辨率  | 支持帧率（fps）   | 类型 |
+            | --- | ---- | ---- | 
+            | 1920x1080 | 30,25,24 | 离散 |
+            | 1280x720 | 60，50，30，25 | 离散 |
+            | 640x480 | 90-120（步进 1） | 步进 |
+    - `VIDIOC_S_PARM`
+        此 IOCTL 用于设置视频流的参数，其中最常用的就是帧率。它通过 `v4l2_streamparm` 结构体传递参数。
+        - 数据结构
+            ```c
+            struct v4l2_streamparm {
+                __u32 type;         // 流类型（如 V4L2_BUF_TYPE_VIDEO_CAPTURE）
+                union {
+                    struct v4l2_captureparm capture;    // 捕获流参数
+                    struct v4l2_outputparm output;  // 输出流参数
+                } parm;
+            };
+
+            struct v4l2_captureparm {
+                __u32 capability;       // 能力标志
+                __u32 capturemode;      // 捕获模式
+                struct v4l2_fract timeperframe; // 帧间隔
+                __u32 extendedmode;     // 扩展模式
+                __u32 readbuffers;      // 读缓冲区数量
+                __u32 reserved[4];
+            };
+            ```
+        - 设置帧率示例
+            ```c
+            int set_frame_rate(int fd, int width, int hegiht, int fps) {
+                struct v4l2_streamparm parm = {0};
+                parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+                // 先获取当前参数
+                if (ioctl(fd, VIDIOC_G_PARM, &parm) == -1) {
+                    perror("VIDIOC_G_PARM");
+                    return -1;
+                }
+
+                // 设置帧间隔
+                parm.parm.capture.timeperframe.numerator = 1;
+                parm.parm.capture.timeperframe.denominator = fps;
+
+                // 应用设置
+                if (ioctl(fd, VIDIOC_S_PARM, &parm) == -1) {
+                    perror("VIDIOC_S_PARM");
+                    return -1;
+                }
+
+                printf("帧率设置为：%d fps\n", fps);
+                return 0;
+            }
+            ```
+            **驱动可能不支持任意帧率，实际帧率会在 `VIDIOC_S_PARM` 调用后被调整，建议调用`VIDIOC_G_PARM` 验证实际设置值**。
+     - 完整动态切换流程
+        1. 步骤：枚举支持的分辨率 -> 枚举选定的分辨率的帧间隔 -> 停止当前流 -> 设置新格式（`S_FMT`） -> 设置帧率（`S_PARM`） -> 重启流
+        2. 要点：
+            - 查询优先：切换前务必通过 `ENUM` 系列 IOCTL 查询设备能力；
+            - 停止流：修改分辨率或格式前必须停止视频流（调用`VIDIOC_STREAMOFF`）；
+            - 顺序设置：先设置格式（`VIDIOC_S_FMT`），再设置帧率（`VIDIOC_S_PARM`）；
+            - 验证结果：设置后使用 `VIDIOC_G_FMT` 和 `VIDIOC_G_PARM` 确认实际生效值；
+     - 驱动开发
+       - 核心回调函数
+            | V4L2 操作  | 驱动回调   | 说明 |
+            | --- | ---- | ---- | 
+            | ENUM_FRAMESIZES | v4l2_ioctl_ops->vidioc_enum_framesizes | 填充分辨率枚举信息 |
+            | ENUM_FRAMEINTERVALS | v4l2_ioctl_ops->vidioc_enum_frameintervals | 填充帧间隔枚举信息 |
+            | S_PARM/G_PARM | v4l2_ioctl_ops->vidioc_s_parm/vidioc_g_parm | 设置/获取流参数 |
+       - 实现示例
+            ```c
+            static int mycam_enum_framesizes(struct file *file, void *fh, struct v4l2_frmsizeenum *fsize) {
+                // 检查像素格式是否支持
+                if (fsize->pixel_format != V4L2_PIX_FMT_YUYV) {
+                    return -EINVAL;
+                }
+
+                // 根据索引返回分辨率
+                switch (fsize->index) {
+                    case 0 :
+                        fsize->type = V4l2_FRMSIZE_TYPE_DISCRETE;
+                        fsize->discrete.width = 1920;
+                        fsize->discrete.height = 1080;
+                        break;
+                    case 1:
+                        fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+                        fsize->discrete.width = 1280;
+                        fsize->discrete.height = 720;
+                        break;
+                    default:
+                        return -EINVAL;     // 枚举结束
+                }
+
+                return 0;
+            }
+            ```
+
+7. 建议：
    - 始终验证 `v4l2_format.type`（总体格式） 或 `v4l2_fmtdesc.type`（像素格式）字段，确保应用请求的是正确类型；
    - 在 `VIDIOC_S_FMT` 中，如果硬件不支持请求的分辨率，应将其调整为最接近的可用值；
    - 计算 `bytesperline` 和 `sizeimage` 时要考虑硬件对齐要求，避免缓冲区溢出；
