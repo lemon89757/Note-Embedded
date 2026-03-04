@@ -2647,16 +2647,172 @@ static int vivid_probe(struct platform_device *pdev) {
    - 功能丰富：支持亮度、对比度、饱和度等控件调节；
 
 #### 架构图
-
+- [ ] 补充 `UVC` 驱动软件架构图
 
 #### 相关数据结构
+`UVC` 驱动的核心是几个关键的结构体，它们描述了设备、流、帧、格式等概念。
 
+| 结构体 | 定义位置 | 主要作用 |
+| ---- | ---- | ---- | 
+| `struct uvc_device` | uvc_driver.c | 代表一个 `UVC` 设备，包含设备全局信息、视频控制接口、视频流接口链表等 |
+| `struct uvc_video_chain` | uvc_entity.c | 描述设备的功能单元（如摄像头传感器、处理单元）之间的连接关系 |
+| `struct uvc_streaming` | uvc_video.c | 管理视频流，包含格式、帧描述、`URB`（USB 请求块）队列等核心流控数据 |
+| `struct uvc_format_desc` | uvc_video.c | 描述 `UVC` 设备支持的视频格式，如 `MJPEG`、`YUYV`、`H264` 等 |
+| `struct uvc_frame_desc` | uvc_video.c | 描述在特定格式下的帧分辨率、帧率等参数 |
+
+```c
+// 简化片段
+struct uvc_streaming {
+    struct list_head list;
+    struct uvc_device *dev;     // 所属 UVC 设备
+    struct video_device *vdev;
+    struct uvc_video_chain *chain;  // 功能链
+
+    // 格式与帧
+    struct uvc_format_desc *format;     // 当前格式
+    struct uvc_frame_desc *frame;       // 当前帧
+    struct uvc_format_desc *formats;    // 支持格式链表
+    struct uvc_frame_desc *frames;      // 支持帧链表
+
+    // 数据流
+    struct usb_host_endpoint *ep;       // USB 端点
+    struct urb *urb[UVC_URBS];          // URB 数组
+    dma_addr_t urb_dma[UVC_URBS];       // DMA 地址
+    unsigned int urb_size;              // URB 大小
+
+    // 控制 
+    struct mutex mutex;
+    atomic_t active;                    // 流状态
+}
+```
 
 #### 驱动初始化与 probe 流程
+1. USB 设备插入：USB 核心识别设备，匹配 `VID/PID` 或设备类（`Class`）、子类（`SubClass`）、协议（`Protocol`）；
+2. 调用 `UVC` 驱动的 `probe` 函数：`uvc_probe(struct usb_interface *intf, const struct usb_device_id *id)`；
+   - 解析设备描述符（`Device Descriptor`）、配置描述符（`Configuration Descriptor`）；
+   - 查找视频控制接口（`VC Interface`）和视频流接口（`VS Interface`）；
+   - 解析单元（`Unit`）和选择器（`Selector`）描述符，构建 `uvc_entity` 链表；
+3. 注册 `V4L2` 设备：
+   - 调用 `uvc_register_video_device()` 创建 `video_device`；
+   - 设置 `V4L2` 操作集 `uvc_fops`、`uvc_ioctl_ops`；
+   - 最终通过 `video_register_device()` 向内核注册，在 `/dev/videoX` 创建设备节点。
+
+```c
+// 简化
+static int uvc_probe(struct usb_interface *intf, const struct usb_device_id *id) {
+    struct uvc_device *dev;
+    int ret;
+
+    // 1. 分配并初始化 uvc_device
+    dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+    uvc_parse_control(dev);     // 解析控制描述符
+
+    // 2. 初始化视频流
+    list_for_each_entry(streaming, &dev->streams, list) {
+        uvc_video_init(streaming);
+        ret = uvc_register_video_device(dev, streaming);
+        // 错误处理...
+    }
+
+    // 3. 将设备添加到全局链表
+    usb_set_intfdata(intf, dev);
+
+    return 0;
+}
+```
+
 #### 视频流传输机制
+`UVC` 视频流通常使用 USB 等时传输（`Isochronous Transfer`），以保证稳定的数据速率和实时性。
+
+1. 应用通过 `V4L2 API` 发起流开启（`VIDIOC_STREAMON`）；
+2. `UVC` 驱动提交 `URB` 到 USB 核心，开始轮询等时端点；
+3. 数据达到后，`URB` 完成回调将数据填充入 `V4L2` 缓冲区；
+4. `V4L2` 将缓冲区传递给用户空间应用；
+
+```c
+// URB 完成回调函数（简化）
+static void uvc_video_complete(struct urb *urb) {
+    struct uvc_streaming *stream = urb->context;
+    struct uvc_buffer *buf;
+
+    // 检查 URB 状态
+    if (urb->status < 0) {
+        uvc_printk(KERN_WARNINGS, "URB error: %d\n", urb->status);
+        return;
+    }
+
+    // 获取当前 V4L2 缓冲区
+    buf = uvc_queue_get_current_buffer(&stream->queue);
+    // 将 URB 中的数据拷贝到缓冲区
+    memcpy(buf->mem, urb->transfer_buffer, urb->actual_length);
+    buf->state = UVC_BUF_STATE_READY;
+
+    // 重新提交 URB，维持数据流
+    usb_submit_urb(urb, GFP_ATOMIC);
+}
+```
+
 #### Controls 处理
-#### 调试
-#### 
+`UVC` 标准定义了一系列可选的控件，如亮度、对比度、饱和度、白平衡等。驱动通过 `UVC` 控制映射将其转换为 `V4L2` 控件。
+
+| `UVC` 控件（`PU/CT`） | `V4L2` 控件 ID | 说明 |
+| ---- | ---- | ---- | 
+| Brightness | `V4L2_CID_BRIGHTNESS` | 亮度调节 |
+| Contrast | `V4L2_CID_CONTRAST` | 对比度调节 |
+| Saturation | `V4L2_CID_SATURATION` | 饱和度调节 |
+| White Balance Temperature | `V4L2_CID_WHITE_BALANCE_TEMPERATURE` | 白平衡色温 |
+| Focus Absolute | `V4L2_CID_FOCUS_ABSOLUTE` | 绝对焦距 |
+
+```c
+// 控件映射示例（drivers/media/usb/uvc/uvc_ctrl.c）
+static struct uvc_control_info uvc_ctrls[] = {
+    {
+        .entity = UVC_GUID_UVC_PROCESSING,
+        .selector = UVC_PU_BRIGHTNESS_CONTROL,
+        .index = 0,
+        .size = 2,
+        .flags = UVC_CTRL_FLAG_SET_CUR | UVC_CTRL_FLAG_GET_RANGE | UVC_CTRL_FLAG_RESTORE,
+        .v4l2_id = V4L2_CID_BRIGHTNESS,
+        data_type = UVC_CTRL_DATA_TYPE_SIGNED,
+    },
+    // ... 更多控件
+};
+
+//  控件设置函数
+static int uvc_set_cur(struct uvc_control *ctrl, u8 *data, u16 size) {
+    struct uvc_entity *entity = ctrl->entity;
+    struct usb_device *udev   = ctrl->dev->udev;
+    u8 request = UVC_SET_CUR;
+
+    // 构造 USB 控制请求（Control Transfer）
+    ret = usb_control_msg(udev, usb_sndctrlpipe(udev, 0), request, USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE, ctrl->selector << 8, entity->id << 8 | ctrl->dev->intfnum, data, size, 5000);
+
+    return ret;
+}
+```
+
+#### 使用与调试
+1. 查看内核日志
+   ```bash
+   # 查看驱动加载和设备识别信息
+   dmesg |  grep uvc
+   ```
+2. 启用动态调试
+   ```bash
+   echo 'module uvcvideo +p' > /sys/kernel/debug/dynamic_debug/control
+   # 然后查看详细日志
+   dmesg -v
+   ```
+3. 检查设备节点
+    成功加载后，`/dev/videoX` 和 `/dev/meidaX` 节点会被创建。
+4. 使用工具
+   - `v4l2-ctl --list-devices`：列出所有 `V4L2` 设备；
+   - `v4l2-ctl -d /dev/video0 --all`：查看设备详细信息、支持格式和控件；
+   - `lsusb -v`：查看 USB 设备的详细描述符
+5. 常见问题
+   - 无视频流：检查 USB 带宽、端点描述符解析是否正确；
+   - 控件无效：检查控件映射表，确认设备是否支持该控件；
+   - 图像花屏：检查 URB 缓冲区大小、帧格式解析（如 `MJPEG` 头）；
 
 ### 基于 MIPI CSI 的嵌入式摄像头驱动开发
 目标：掌握 `MIPI CSI` 摄像头驱动的核心组件、数据流路径、与 `Sensor` 及 `CSI` 控制器的交互，并能编写、调试一个功能完整的驱动
