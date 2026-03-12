@@ -1,4 +1,17 @@
 # Kernel Note
+## Memory Allocation Guide
+> [Memory Allocation Guide](https://www.kernel.org/doc/html/latest/core-api/memory-allocation.html#memory-allocation)
+
+### GFP flags
+`Get Free Page flags`
+
+### GFP flags and reclaim behavior
+
+### memory allocator
+
+### Memory Management APIs
+> [Memory Management APIs](https://www.kernel.org/doc/html/latest/core-api/mm-api.html#c.kmalloc)
+
 ## log
 ### `printk`
 - 查看通过 `printk` 打印的内核日志信息：
