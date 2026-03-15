@@ -448,5 +448,313 @@ APP 根据 `poll` 函数的返回值就可以知道是否有数据，如果有�
 见 [subsystem-interrupt.md]() 相关章节。
 
 ## mmap
+1. 作用：
+   应用程序和驱动之间传递数据时，可以通过 `read/write`（`copy_from_user/copy_to_user`）函数进行，这涉及在用户态 `buffer` 和内核态 `buffer` 之间传送数据。这种方式在数据量较大或者操作频繁时存在效率低的问题：
+   - 数据在 `buffer` 之间的拷贝耗时；
+   - 用户态和内核态之间频繁的状态切换导致的耗时；
+
+   改进方式就是让程序可以直接读写驱动程序中的 `buffer`，这可以通过 `mmap` 实现。`mmap` 能够把内核的 `buffer` 直接映射到用户态，从而让 APP 在用户态直接读写。
+
+2. 虚拟地址与 MMU
+   背景：通过运行同一程序两次，并在程序中打印全局变量的地址和值，打印结果是地址一样，值可以不一样。
+
+   **CPU 发出的地址是虚拟地址**，它经过 `MMU, Memory Manage Unit`（内存管理单元）映射到物理地址上。对于不同进程的同一个虚拟地址，`MMU` 会把它们映射到不同的物理地址。（上述程序打印结果中的地址是虚拟地址）
+   - [ ] 添加虚拟地址到物理地址的转换示意图
+
+3. 虚拟地址与物理地址的转换
+   查看某一进程的映射关系：
+   ```bash
+   # 通过 ps 命令查看进程 ID
+   ps
+   # 查看目标 ID 的映射关系，325 即目标进程的 PID
+   cat /proc/325/maps
+   ```
+   在 Linux 中进程使用 `struct task_strcut` 表示，每一个 APP 在内核里都有一个 `task_struct`。这个结构体保存有内存信息：`mm_struct`，在 `mm_struct` 中通过 `pgd`(`Page Global Directory`) 字段保存页目录表信息（含有虚拟地址和物理地址的映射关系）以及 `mmap` 字段保存虚拟地址的使用情况。
+   - [ ] 添加由 `task_struct` 出发得到的与地址转换相关的数据结构
+     - 每个 APP 在内核中都有一个 `task_struct` 结构体，它用来描述一个进程；
+     - `task_struct` 中用 `mm_struct` 来管理进程占用的内存；
+     - `mm_struct` 中用 `mmap` 字段来记录虚拟地址，用 `pgd` 来描述虚拟地址和物理地址之间的映射关系；
+  
+   `mmap` 字段对应的数据类型为 `struct vm_area_struct`：
+      ```c
+      struct vm_area_struct {
+         vm_start;
+         vm_end;
+         vm_flags;
+         vm_next;
+         ...
+      }
+      ```
+      - 每个 APP 都有一系列的虚拟内存，比如 APP 含有代码段、数据段、BSS 段、栈以及共享库等等。这些单元会保存在内存里，它们的地址空间不同，权限不同（代码段是只读、可运行的；数据段是可读可写的），内核用一系列 `vm_area_struct` 来描述它们；
+      - `vm_start` 和 `vm_end` 字段记录的是虚拟地址；
+      - 虚拟地址的转换需要借助上述 `mm_struct` 中的 `pgd` 字段；
+
+4. ARM 架构中的内存映射
+   ARM 架构支持一级页表映射，还支持二级页表映射。一级页表里地址映射的最小单位是 1M，二级页表地址映射的最小单位有 4K、1K，Linux 使用 4K。
+
+   将页表细分的目的是减少内存浪费（内内存碎片）。
+
+   一级**页表项**里的内容，决定了它是指向一块物理内存，还是指向二级页表：
+   - [ ] Level 1 translation table entry format
+
+   - 一级页表映射过程
+      - 一级页表中每个表项用来设置 1 M 的空间。对于 32 位的系统，虚拟地址空间有 4G，因此需要 4G/1M = 4096 个页表项。
+      - 第 0 个页表项用来表示虚拟地址第 0 个 1M（虚拟地址为 0-0xFFFFF）对应哪一块物理内存，以及一些权限设置。同理，第 1 个页表项表示第 1 个 1M（虚拟地址为 0x100000-0x1FFFFF）对应哪一块物理内存以及一些权限设置。依此类推。
+      - **使用一级页表时，先在内存里设置号各个页表项，然后把页表基地址告诉 `MMU`，就可以启动 `MMU` 了**；
+      - 映射过程：
+         1. CPU 发出虚拟地址 `vaddr`，假设为 0x12345678；
+         2. MMU 根据 `vaddr[31:20]` 找到第一级页表项（第 0x123 项，根据此项内容得知它是一个段页表项）；
+         3. 在页表项中取出**物理地址**：`Section Base Address`，假设为 0x81000000；
+         4. 物理地址加上由 `vaddr` 得到的段内偏移地址 0x45678 得到物理地址 0x81045678； 
+      - [ ] 添加示意图
+
+   - 二级页表映射过程
+     - **首先要设置好一级页表、二级页表，并把一级页表的基地址告诉 `MMU`**；
+     - 二级页表格式：
+       - [ ] Format of level 2 translation table entry
+     - 映射过程：
+       1. CPU 发出虚拟地址 `vaddr`，假设为 0x12345678；
+       2. MMU 根据 `vaddr[31:20]` 找到第一级页表项（第 0x123 项，根据此项内容得知它是一个二级页表项）；
+       3. 在页表项中取出**物理地址**，是二级页表的首地址；
+       4. 根据二级页表的首地址和偏移量大小（`vaddr[19:12]`）0x45，找到二级页表中的第 0x45 项；
+       5. 从二级页表项中得到物理地址 `page base addr`，假设是 0x81889000；
+       6. 结合页内偏移地址 `vaddr[11:0]` （即 0x678）得到物理地址 0x81889678；
+     - [ ] 添加示意图
+
+5. 给 APP 新建内存映射
+   综上可知，要给 APP 新开辟一块虚拟内存，并且让它指向某块内核 buffer，需要完成：
+   - 得到一个 `vm_area_struct`，它表示 APP 的一块虚拟内存空间：APP 调用 `mmap()` 系统函数时，内核就帮助我们构造了一个 `vm_area_struct`，里面包含虚拟地址的范围、权限；
+   - 确定物理地址：若要映射某个内核 `buffer`，则需要得到它的物理地址，这得由你提供；
+   - 给 `vm_area_struct` 和物理地址之间建立映射关系：内核提供相关函数；
+   ```c
+   // mmap 调用过程
+   // app: mmap(addr, length, prot, flags, fd, offset)
+   // ------
+   // 内核：
+   SYSCALL_DEFINE6(mmap_pgoff ...)  // mm/mmap.c
+      vm_mmap_pgoff(file, addr, len, prot, flags, pgoff);   // mm/util.c
+         do_mmap_pgoff(file, addr, len, prot, flag, pgoff, &populate);  // include/linux/mm.h
+            do_mmap(file, addr, len, prot, flags, 0, pgoff, populate);  // mm/mmap.c
+               addr = get_unmmaped_area(file, addr, len, pgoff, flags); // 得到未使用的虚拟地址
+               addr = mmap_region(file, addr, len, vm_flags, pgoff); // mm/mmap.c
+                  vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);  // 分配新的 vm_area_struct
+
+                  // 设置 vm_area_struct
+                  vma->vm_mm = mm;
+                  vma->vm_start = addr;
+                  vma->vm_end = addr + len;
+                  vma->vm_flags = vm_flags;
+                  vma->vm_page_prot = vm_get_page_prot(vm_flags);
+                  vma->vm_pgoff = pgoff;
+
+                  // 调用驱动程序的 mmap
+                  err = file->f_op->mmap(file, vma);
+   ```
+   - 在驱动的 `mmap` 函数中需要完成：
+     1. 提供物理地址；
+     2. 设置属性：是否使用 `cache, buffer`；
+     3. 给 `vm_area_struct` 和物理地址之间建立映射；
+
+6. `mmap` 驱动实现
+   - `cache` 和 `buffer`
+      使用 `mmap` 时需要有 `cache` 和 `buffer` 的知识。
+      - [ ] 添加链接内容 
+      参考：[ARM 的 cache 和写缓冲器（write buffer）]()；
+      - [ ] 添加 cache、处理器内核及主存之间的关系
+
+      `cache` 是一块高速内存；写缓冲器（`write buffer`）相当于一个 `FIFO`，可以把多个写操作集合起来一次写入内存。
+
+      结合程序运行时的局部性原理。CPU 的速度非常快，内存的速度相对来说很慢。根据局部性原理，通过引入 `cache` 使得 CPU 能够以较快的速度对数据进行读写：
+        - 读取内存 `addr` 处数据时：
+         1. 先看 `cache` 中有没有 `addr` 的数据，如果有就直接从 `cache` 里返回数据，这被称为 `cache` 命中；
+         2. 如果 `cache` 中没有 `addr` 的数据，则从内存里把数据读入。这里它会读入一行（`cache line`）数据，而非仅此一个数据；
+         3. CPU 很可能再次用到这个 `addr` 的数据，或者它附近的数据，这时就可以快速地从 `cache` 中获得数据；
+       - 写数据：
+         CPU 要写数据时，可以直接写入内存（很慢）；也可以先写入 `cache` 再通过 `cache` 写入内存。这里有 2 种从 `cache` 写入内存的策略：
+         1. 写通（`write through`）：**数据要同时写入 `cache` 和内存，所以 `cache` 和内存中的数据保持一致**，使用写缓冲器提高效率；有些写缓冲器有“写合并”功能，对于内存来说这没什么差别，但是对于硬件寄存器这可能导致问题。因此，**对于寄存器操作，不会启用 `buffer` 功能**；对于内存操作（例如 LCD），可以启用 `buffer` 功能；
+         - [ ] 如何理解写通？
+         2. 写回（`write back`）：**新数据只是写入 `cache`，不会立刻写入内存，`cache` 和内存中的数据并不一致**；新数据写入 `cache` 时，这一行 `cache` 被标记为 “脏”（`Dirty`），**当 `cache` 不够用时，才需要把脏数据写入内存**；
+
+      **使用写回功能可以大幅提高效率，但是要注意 `cache` 和内存中的数据很可能不一致**。这在很多时候需要小心处理：比如 CPU 产生了新数据，DMA 把数据从内存搬到网卡，这时候就需要 CPU 先执行命令把新数据从 `cache` 刷到内存；反过来也是一样的，DMA 从网卡获得的新数据在内存里，CPU 读数据之前先把 `cache` 中的旧数据丢弃。
+   
+   - 是否使用 `cache`、`buffer`
+      有 4 种组合方式（`arch/arm/include/asm/pgtable-2level.h`）：
+      ```c
+      #define L_PTE_MT_UNCACHED           ...   // 00
+      #define L_PTE_MT_BUFFERABLE         ...   // 01
+      #define L_PTE_MT_WRITETHROUGH       ...   // 10
+      #define L_PTE_MT_WRITEBACK          ...   // 11
+      ```
+      对应下表中的各项（下表来自 s3c2410 芯片手册）：
+      | 是否启用 `cache` | 是否启用 `buffer` | 说明 |
+      | ----- | ----- | ----- |
+      | 0 | 0 | Non-cached, Non-buffered(NCNB)；<br />读、写都直达外设硬件。 |
+      | 0 | 1 | Non-cached, buffered(NCB)；<br />读、写都直达外设硬件；<br />写操作通过 `buffer` 实现，CPU 不等待写操作完成，马上执行下一条指令。 |
+      | 1 | 0 | Cached, Write-Throuth mode(WT)；<br />读：cache hit 时从 `cache` 读数据；cache miss 时入一行数据到 `cache`；<br />写：通过 `buffer` 实现，CPU 不等待写操作完成，马上执行下一条指令。 |
+      | 1 | 1 | Cached, Write-Back mode(WB)；<br />读：cache hit 时从 `cache` 读数据；cache miss 时入一行数据到 `cache`；<br />写：通过 `buffer` 实现，cache init 时新数据不会到达硬件，而是在 `cache` 中被标记为“脏”；cache miss 时，通过 `buffer` 写入硬件，CPU 不等待写操作完成，马上执行下一条指令。 |
+      - 第一种适合寄存器的读写；
+      - 第二种适合显存操作，因为对显存很少有读操作，基本都是写操作，而写操作即使被“合并”也没有关系；
+      - 第三种适用于只读设备，在读数据时用 cache 加速，基本不需要写；
+      - 第四种适合一般的内存读写；
+
+   - 驱动实现示例
+     - [ ] framebuffer 子系统？
+      ```c
+      // drivers/video/fbdev/mxsfb.c
+      static int mxsfb_mmap(struct fb_info *info, struct vm_area_struct *vma) {
+         u32 len;
+         unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
+
+         if (offset < info->fix.smem_len) {
+            // mmapping framebuffer memory
+            len = info->fix.smem_len - offset;
+            // 1. 确定物理地址，单位：page, 4k
+            vma->vm_pgoff = (info->fix.smem_start + offset) >> PAGE_SHIFT;
+         } else {
+            return -EINVAL;
+         }
+
+         len = PAGE_ALIGN(len);
+         if (vma->vm_end - vma->vm_start > len)
+            return -EINVAL;
+         
+         // make buffers bufferable
+         // 2. 设置属性: cache? buffer?
+         vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+
+         // 3. 映射
+         if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff, vma->vm_end - vma->vm_start, vma->vm_page_prot)) {
+            dev_dbg(info->device, "mmap remap_pfn_range failed\n");
+            return -ENOBUFS;
+         }
+
+         return 0;
+      }
+
+      // drivers/video/fbdev/controlfb.c
+      static int controlfb_mmap(struct fb_info *info, struct vm_area_struct *vma) {
+         unsigned long mmio_pgoff;
+         unsigned long start;
+         u32 len;
+
+         // 1. 确定物理地址
+         start = info->fix.smem_start;
+         len = info->fix.smem_len;
+         mmio_pgoff = PAGE_ALIGN((start & ~PAGE_MASK) + len) >> PAGE_SHIFT;
+         if (vma->vm_pgoff >= mmio_pgoff) {
+            if (info->var.accel_flags)
+               return -EINVAL;
+            vma->vm_pgoff -= mmio_pgoff;
+            start = info->fix.mmio_start;
+            len = info->fix.mmio_len;
+            // 2. 确定属性: cache ? buffer ?
+            vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+         } else {
+            // framebuffer
+            vma->vm_page_prot = pgprot_cached_wthru(vma->vm_page_prot);
+         }
+
+         // 3. 映射
+         return vm_iomap_memory(vma, start, len);
+      }
+      ```
+7. 应用 + 驱动示例
+   在驱动程序中申请一个 8K 的 buffer，让 APP 通过 mmap 能直接访问。
+   - app
+      `mmap(...)` 函数原型：
+      ```c
+      // man 2 mmap:
+      // mmap, munmap - map or unmap files or devices into memory
+      /* mmap() creates a new mmaping in the virtual address space
+       * of the calling process. The starting address for the new
+       * mapping is spesified in addr. The length argument specifies
+       * the length of the mapping(which must be greater than 0).
+       * @addr：NULL 时由内核选择一个（页对齐的）地址进行 mapping（最常用方式）；
+       *       如果不为 NULL，内核将会选择一个最为接近的页边界（大于等于由 /proc/sys/vm/mmap_min_addr 指定的值）以进行 mapping。
+       *       如果当前地址（addr）已经被映射，内核可能会/不会按照 addr 选择一个新地址
+       * @prot: describes the desired memory protection of the mapping and must not conflict with the open mode of the file.
+       *       PROT_EXEC <| PROT_READ | PROT_WRITE | PROT_NONE>
+       * @flags: determines whether updates to the mapping are visible to other process mapping the same region, and are carried through to the underlying file.
+       *       MAP_SHARED, MAP_SHARED_VALIDATE, MAP_PRIVATE
+       * @fd：after the mmap() call has returned, the fd can be closed immediately without invalidating the mmaping.
+       * @offset: must be a multiple of the page size as returned by sysconf(_SC_PAGE_SIZE)
+       * return: 完成映射的（用户空间虚拟）地址（mapping），出错时返回 MAP_FAILED(-1)
+       */
+      void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
+      int munmap(void *addr, size_t length);
+      ```
+      app 程序（部分）：
+      ```c
+      // 1. 打开文件
+      fd = open("/dev/hello", O_RDWR);
+      if (fd == -1) {
+         printf("can't open file /dev/hello\n");
+         return -1;
+      }
+
+      // 2. mmap
+      buf = mmap(NULL, 1024*8, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+      if (buf == MAP_FAILED) {
+         printf("can't mmap file /dev/hello\n");
+         return -1;
+      }
+      printf("mmap address = 0x%x\n", buf);
+      printf("buf origin data = %s\n", buf);
+
+      // 3. write
+      strcpy(buf, "new");
+
+      // 4. read & compare
+      // 对于 MAP_SHARED 映射，str = "new"；MAP_PRIVATE，str = "old"
+      read(fd, str, 1024);
+      if (strcmp(buf, str) == 0) {
+         // MAP_SHARED
+         printf("compare ok!\n");
+      } else {
+         // MAP_RPIVATE
+         printf("compare err!\n");
+         printf("str = %s!\n", str);   // old
+         printf("buf = %s!\n", buf);   // new
+      }
+      ```
+      - `MAP_SHARED`：多个 app 都调用 mmap 映射同一块内存时，对内存的修改大家都可以看到。就是说多个 app、驱动程序实际上访问的都是同一块内存；
+      - `MAP_PRIVATE`：创建一个 `copy to write` 的私有映射。在没有发生写操作时，APP、驱动访问的都是同一块内存。当 app 对该内存进行修改时（写操作），其他程序是看不到的，因为当 app 写内存时内核会先创建一个（这块内存的）拷贝给这个 app（触发 `copy to write`）。这个拷贝是这个 app 私有的，其他的 app、驱动无法访问。
+        - Linux 中多个 APP 共享同一个动态库，在写操作之前大家都使用内存中唯一一份代码。当 APP1 发起写操作时，内核会为它复制一份代码，再执行写操作。于是 APP1 就有了专享的、私有的动态库，在里面做的修改只会影响到 APP1。其他程序仍然共享原先的、未修改的代码。
+      - 查看该程序的内存使用情况：
+         ```bash
+         cat /proc/PIC/maps
+         ```
+   - 驱动
+      驱动需要：
+     1. 分配 8K 的内存；
+         | 函数名 | 说明 |
+         | ----- | ----- |
+         | `kmalloc` | 分配到的内存在物理地址上是连续的 |
+         | `kzalloc` | 分配到的内存在物理地址上是连续的，内容清 0 |
+         | `vmalloc` | 分配到的内存在物理地址上不保证是连续的 |
+         | `vzalloc` | 分配到的内存在物理地址上不保证是连续的，内容清 0 |
+         - 应使用 `kmalloc` 或 `kzalloc`，这样得到的内存物理地址是连续的，在 mmap 后 APP 才可以使用同一个基地址去访问这块内存；
+         - 如果物理地址不连续，就要执行多次 mmap；
+     2. 提供 mmap 函数：
+         ```c
+         static int hello_drv_mmap(struct file *file, struct vm_area_struct *vma) {
+            // 1. 获得物理地址
+            // kernel_buf 是内核使用的虚拟地址
+            unsigned long phy = virt_to_phys(kernel_buf);
+            // 2. 设置属性
+            // 不使用 cache，使用 buffer
+            vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+            // 3. 映射
+            // 按页映射 phy >> PAGE_SHIFT
+            if (remap_pfn_range(vma, vma->vm_start, phy >> PAGE_SHIFT, vma->vm_end - vma->vm_start, vma->vm_page_prot)) {
+               printk("mmap remap_pfn_range failed\n");
+               return -ENOBUFS;
+            }
+
+            return 0;
+         }
+         ```
+         - **`remap_pfn_range` 中 `pfn` 是指 `Page Frame Number`（页帧号）**，当给定物理地址 `phy`，它的 `pfn = phy / PAGE_SIZE = phy >> PAGE_SHIFT`；
+         - APP 调用 mmap 后，会导致驱动程序的 mmap 函数被调用，最终 APP 的虚拟地址和驱动程序中的物理地址就建立了映射关系（驱动和 APP 中的虚拟地址指向同一块物理地址）。APP 可以直接访问驱动程序的 buffer。
 
 ## 同步与互斥
