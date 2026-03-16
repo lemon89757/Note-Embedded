@@ -328,7 +328,124 @@ pinctrl_put(struct pinctrl *p);
 参考需要根据具体芯片厂商提供的参考说明，例如上述设备树格式文件使用的是飞思卡尔的 GPIO 子系统格式；
 
 ## 驱动示例
-- [ ] 增加示例代码
+基于 GPIO 子系统的 LED 驱动程序：
+1. 先将引脚配置为 GPIO 功能：使用 PinCtrl 子系统，只需要在设备树中指定即可，在驱动代码上不需要我们做任何事情；
+   ```dts
+   // imx6ull
+   &iomuxc_snvs {
+    ...
+    myled_for_gpio_subsys:myled_for_gpio_subsys{
+      fsl,pins = <MX6ULL_PAD_SNVS_TAMPER3_GPIO5_IO03 0x000110A0>;
+    };
+   };
+   ```
+   - 有些芯片提供设备树生成工具，可在 GUI 界面中选择引脚功能和配置信息，就可以自动生成 PinCtrl 子节点；
+   - 有些芯片只提供文档，一般在内核源码目录 `Documentation/devicetree/bindings/pinctrl` 下；
+   - 如果没有文档，参考内核源码中的设备树文件：`arch/arm/boot/dts`；
+   - 最后一步，网络搜索；
+2. GPIO 本身需要确定引脚，这需要在设备树的相应节点中添加 GPIO 属性；
+   ```dts
+   myled {
+    compatible = "100ask,leddrv";
+    pinctrl-names = "default";
+    pinctrl-0 = <&myled_for_gpio_subsys>;
+    led-gpios = <&gpio5 3 GPIO_ACTIVE_LOW>;
+   }
+   ```
+   - 查看电路原理图确定引脚信息；
+   - 在目标节点下添加 `[name]-gpios` 属性，指定 `gpio-controller`，并根据 `gpio-controller` 中的 `#gpio-cells` 要求指定引脚等信息；
+3. 设备树节点会被内核转换为 platform_device。相应的，驱动代码中需要注册一个 platform_driver，并在 probe 函数中：获取设备树中的 GPIO 信息，注册 file_operations；
+   ```c
+   static const struct file_operations led_drv = {
+    // ...
+   }
+
+   static const struct of_device_id ask100_leds[] = {
+    {.compatible = "100ask,leddrv"},
+    {},
+   };
+
+   static int chip_demo_gpio_probe(struct platform_device *pdev) {
+    printk("%s %s line %d\n", __FILE__, __FUNCTION__, __LINE__);
+    
+    //...
+
+    // 设备树中定义有：led-gpios = <...>
+    led_gpio = gpiod_get(&ped->dev, "led", 0);
+    if (IS_ERR(led_gpio)) {
+      dev_err(&ped->dev, "Failed to get GPIO for led\n");
+      return PTR_ERR(led_gpio);
+    }
+
+    //...
+    major = register_chrdev(0, "100ask_led", &led_drv);
+    led_class = class_create(THIS_MODULE, "100ask_led_class");
+    if (IS_ERR(led_class)) {
+      printk("%s %s line %d\n", __FILE__, __FUNCTION__, __LINE__);
+      unregister_chrdev(major, "led");
+      gpiod_put(led_gpio);
+      return PTR_ERR(led_class);
+    }
+    
+    device_create(led_class, NULL, MKDEV(major, 0), NULL, "100ask_led%d", 0);
+    
+    //...
+   }
+
+   static ... chip_demo_gpio_remove(...) {
+    // 释放资源
+    //...
+
+    gpiod_put(led_gpio);
+
+    //...
+   }
+
+
+   static struct platform_driver chip_demo_gpio_driver = {
+    .probe = chip_demo_gpio_probe,
+    .remove = chip_demo_gpio_remove,
+    .driver = {
+      .name = "100ask_led",
+      .of_match_table = ask100_leds,
+    },
+   };
+
+   static int __init led_init(void) {
+    int err;
+    printk("%s %s line %d\n", __FILE__, __FUNCTION__, __LINE__);
+    err = platform_driver_register(&chip_demo_gpio_driver);
+    return err;
+   }
+   ```
+4. 在 file_operations 中实现对 gpio 的读写操作等；
+   ```c
+   static int led_drv_open(struct inode *node, struct file *file) {
+    // int minor = iminor(node);
+
+    printk("%s %s line %d\n", __FILE__, __FUNCTION__, __LINE__);
+
+    // 根据次设备号初始化 LED
+    gpiod_direction_output(led_gpio, 0);
+
+    return 0;
+   }
+
+   static ssize_t led_drv_write(struct file *file, const char __user *buf, size_t size, loff_t *offset) {
+    int err;
+    char status;
+    // struct inode *inode = file_inode(file);
+    // int minor = iminor(inode);
+
+    printk("%s %s line %d\n", __FILE__, __FUNCTION__, __LINE__);
+    err = copy_from_user(&status, buf, 1);
+
+    // 根据次设备号和 status 控制 LED
+    gpiod_set_value(led_gpio, status);
+
+    return 1;
+   }
+   ```
 
 ## 内核源码
 1. 内核版本：
