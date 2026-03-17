@@ -7,7 +7,7 @@
    - `.dts`：   设备树文件；
    - `.dtsi`：  类似于 C 语言中的头文件。一个 SOC 可以作出很多不同的板子，这些不同的板子肯定是有共同的信息，将这些共同的信息提取出来作为一个通用的文件，其他的 `.dts` 文件可以直接引用这个通用文件（`.dtsi`）；
    一般 `.dts` 描述板级信息（例如开发板上的 IIC 设备、SPI 设备等），`.dtsi` 描述 SOC 级信息（例如 SOC 有几个 CPU、主频是多少、各个外设控制器信息等）；
-   此外，`.dts` 文件也可以直接引用 `.dts` 文件以及 C 语言的 `.h` 头文件，例如：
+   此外，`.dts` 文件也可以直接引用 `.dts` 文件以及 C 语言的 `.h` 头文件（可以定义一些宏），例如：
    ```dts
    #include <dt-bindings/input/input.h>
    #include "imx6ull.dtsi"
@@ -25,6 +25,19 @@
     ```
 
 ## 设备树的编译
+- 手动编译
+   内核目录下 `/scripts/dtc/dtc` 是设备树的编译工具，直接使用它的话，包含其他文件时不能使用 `#include`，而必须使用 `/include`。
+   ```bash
+   # -I 指定输入格式
+   # -O 指定输出格式
+   # -o 指定输出文件
+   # 编译 dts 为 dtb
+   ./scripts/dtc/dtc -I dts -O dtb -o tmp.dtb arch/arm/boot/dts/xxx.dts
+   # 反编译 dtb 为 dts
+   ./scripts/dtc/dtc -I dtb -O dts -o tmp.dts arch/arm/boot/dts/xxx.dtb
+   ```
+
+- make 编译
    根据 Linux 内核顶层 Makefile 文件，可以找到用于编译设备树的相关目标。
    ```bash
    make all # 编译 Linux 源码中的所有东西，包括 zImage，.ko 驱动模块以及设备树
@@ -47,20 +60,52 @@
     2. 《Power_ePAPR_APPROVED_vxx.pdf》
     3. 内核文档 Documentation/bind，其中会有详细的规定以及各个厂商对于自己设备树的具体说明；
 
+`.dts` 文件布局：
+```dts
+/dts-v1/;             // 表示版本
+[memory reservations] // 格式为：/memreserve/ <address> <length>;
+/ {
+  [property definitions]
+  [child nodes]
+};
+```
+
 1. 每个设备树文件有且仅有一个根节点，以 `/` 表示，被 `#include` 的头文件中的根节点会与当前文件合并成一个；
 2. 设备树中节点命名格式：
     ```dts
-    label:node-name@unit-address
+    [label:]node-name[@unit-address]
     ```
     - 可以通过 `&label` 来访问其对应的节点；
     - `label:` 可以省略；
-3. 标准属性
+    - 节点引用方式：
+      ```dts
+      // 在根节点之外使用 label 引用 node
+      &uart0 {
+        status = "disabled";
+      };
+      // 在根节点之外使用全路径
+      &{/uart@fe001000} {
+        status = "disabled";
+      };
+      ```
+3. 属性格式
+   简单地说，properties 就是 `"name=value"`，其中 `value` 有多种取值方式：
+   - `property-name = value;`；
+   - `property-name;`；
+   
+   其中 `value` 的取值有 3 中：
+   - arrays of cells：1 个或多个 32 位数据，64 位数据使用 2 个 32 位数据表示；用尖括号包围起来；
+   - string：a null-terminated string，用双引号包围起来；
+   - bytestring：1 个或多个字节（字节序列）；用中括号包围起来；
+   
+   `value` 还可以是各种指的组合，用逗号隔开：`compatible = "ns16550", "ns8250"`、`example = <0xf00f0000 19>, "a strange property format"`。
+4. 标准属性
    不同的设备需要的属性不同，用户可以自定义属性。除了用户自定义属性，有很多属性是标准属性。
-   - `compatible`：用于匹配内核中的驱动程序。根节点的 `compatible` 属性可知所使用的设备（"硬件设备名字", "设备所使用的 SOC"："fsl,imx6ull-14x14-evk", "fsl,imx6ull"），内核会通过根节点的 `compatible` 属性查看是否支持此设备，如果支持的化就会启动内核；
+   - `compatible`：用于匹配内核中的驱动程序，建议取成的形式：`manufacturer, model`，即“厂商 + 模块名”。由根节点的 `compatible` 属性可知所使用的设备（"硬件设备名字", "设备所使用的 SOC"："fsl,imx6ull-14x14-evk", "fsl,imx6ull"），**内核会通过根节点的 `compatible` 属性查看是否支持此设备，如果支持的化就会启动内核**；
    - `mode`：描述设备模块信息，例如名字；
    - `status`："okay"（设备可操作）、"disable"（设备当前不可操作，但未来可变为可操作的）、"fail"（设备不可操作，设备检测到了一系列错误）、"fail-sss"（同 "fail"，"sss" 部分是检测到的错误内容）；
-   - `#address-cells` 和 `#size-cell`：前者决定了**子节点** `reg` 属性中地址信息所占用的**字长**（32 位）；后者决定了子节点 `reg` 属性中长度信息所占的**字长**（32 位）；
-   - `reg`：`reg` 属性的值一般是 `(address, length)` 对，用于描述设备地址空间资源信息，一般都是某个外设寄存器地址范围信息；
+   - `#address-cells` 和 `#size-cells`：前者决定了**子节点** `reg` 属性中地址信息所占用的**字长**（32 位）；后者决定了子节点 `reg` 属性中长度信息所占的**字长**（32 位）；`cell` 指一个 32 位的数值；
+   - `reg`：`reg` 属性的值一般是一系列的 `(address, length)` 对，用于描述设备地址空间资源信息（从哪里开始，长度是多少），一般都是某个外设寄存器地址范围信息；父节点的 `#address` 和 `#size` 说明了需要用多少个 32 位数来表示 `(address, length)` 信息；
    - `ranges`：`ranges` 属性值可以为空或者按照 `(child-bus-address, parent-bus-address, length)` 格式编写的数字矩阵，表示一个地址映射/转换表，由子地址、父地址和地址空间长度组成，例如：
     ```dts
     soc {
@@ -82,7 +127,7 @@
     上述设备树指定了一个 1024KB(0x00100000) 的地址范围，子地址空间的物理起始地址为 0x0，父地址空间的物理起始地址为 0xe0000000。子节点 `serial` 定义了设备寄存器的起始地址为 0x4600，寄存器长度为 0x100，经过地址转换，`serial` 设备可以从 0xe0004600 开始进行读写操作；
     - `name`：用于记录节点名字，已被弃用；
     - `device_type`：已被弃用；
-4. 特殊节点
+5. 特殊节点
    - `aliases`，定义别名；
    - `chosen`，并不是一个真实的设备，主要是为了 `uboot` 向内核传递数据，重点是 `bootargs` 参数：
         ```dts
@@ -93,8 +138,17 @@
         - 进入到 `proc/device-tree/chosen` 目录中，会发现存在 `bootargs` 这个属性，通过 `cat` 命令查看内容可得到 `uboot` 启动内核时 `bootargs` 的环境变量；
         - `uboot` 在 `chosen` 节点中添加了 `bootargs` 属性，参考 `common/fdt_support.c` 中的 `fdt_chosen` 函数；
         - `bootz` 命令 -> `do_bootz()` -> `do_bootm_states()` -> `boot_selected_os()` -> `do_bootm_linux()` (`boot_fn() -> boot_prep_linux() -> image_setup_linux() -> fdt_chosen()`)；
+6. 根节点
+   - 每个设备树文件有且仅有一个根节点；
+   - 根节点下的 `compatible` 属性用来选择哪一个 `machine desc`。内核启动后会根据根节点的 `compatible` 属性找到对应的 `machine desc` 结构体，**执行其中的初始化函数**；
+   - 根节点必须有的属性：
+     - `#address-cells`
+     - `#size`
+     - `compatible`
+     - `model`
 
-## 关于 Linux 内核是否支持某设备的判断
+## 设备树之于 Linux
+### 关于 Linux 内核是否支持某设备的判断
 1. 使用设备树前
    - `uboot` 会向内核传递一个叫做 `machine id` 的值，即设备 ID，告诉内核当前的设备信息，内核据此判断是否支持此设备；
    - 针对每个设备，Linux 内核都用 `MACHINE_START` 和 `MACHINE_END` 来定一个 `machine_desc` 结构体变量来描述这个设备（eg:`arch/arm/mach-imx/mach-mx35_3ds.c`）；
@@ -108,17 +162,35 @@
    - `start_kernel` 调用 `setup_arch` 函数（位于 `arch/arm/kernel/setup.c`）来匹配 `machine_desc`；
    - `setup_arch` 继续调用 `setup_machine_fdt() -> of_flat_dt_match_machine()` 来实现匹配； 
 
-## 设备树在 Linux 中文件目录的体现
+### 设备树在 Linux 中文件目录的体现
+- `proc` 目录
 Linux 内核启动的时候会解析设备树中各个节点的信息，并且在根文件系统中的 **`/proc/device-tree`** 目录下根据节点名字创建不同的文件夹。
 
+- `sys` 目录
+  ```bash
+  ls /sys/firmware/
+  # 输出内容：devicetree、fdt
+  ```
+
+  - 在 `/sys/firmware/devicetree` 目录下，根节点对应 `base` 目录，每一个节点对应一个目录，每一个属性对应一个文件；
+  - 属性查看：
+    - 字符串：`cat` 命令；
+    - 数值：`hexdump` 命令；
+  - `sys/firmware/fdt` 文件就是 `dtb` 格式的设备树文件，可以在它的基础上通过反编译命令得到 `dts` 文件；
+
+### 内核对设备树的处理
+- 从源代码 `dts` 文件开始，设备树的处理过程为：`dts` -> `dtb` -> `device_node` -> `platform_device`：
+  - `dts` 在 PC 机上被编译为 `dtb` 文件；
+  - `uboot` 把 `dtb` 文件传给内核；
+  - 内核解析 `dtb` 文件，把每一个节点都转换为 `device_node` 结构体；
+  - 根节点被保存在全局变量 `of_root` 中，从 `of_root` 开始可以访问到任意节点；
+  - 对于某些 `device_node` 结构体体，将会被转换为 `platform_device` 结构体。
 - 内核解析 `dtb` 文件
   - 解析流程：`start_kernel -> setup_arch -> unflatten_device_tree -> __unflatten_device_tree -> unflatten_dt_node(解析 DTB 文件中的各个节点)`
 
-## 向设备树中添加节点信息
-- 参考：
-  - Linux 源码目录：`/Documentation/devicetree/bindings`。例如在 I.MX6ULL 这颗 SOC 的 I2C 下添加一个节点，可以查看 `/Documentation/decicetree/bingdings/i2c/i2c-imx.txt`（由具体芯片厂商提供各自的绑定参考指南，目录下找不到也是需要联系芯片厂商提供）。
+### 设备树操作相关函数和数据结构
+内核会把 dtb 文件解析出一系列的 device_node 结构体，可以基于 device_node 进行操作。如果设备树中的节点能够进一步地生成 platform_device，则可以基于 platform_device 进行操作。
 
-## 设备树操作相关函数和数据结构
 - 节点描述结构体
   linux 内核使用 `device_node` 结构体来描述一个节点，位于 `include/linux/of.h` 文件中：
   ```c
@@ -182,7 +254,34 @@ Linux 内核启动的时候会解析设备树中各个节点的信息，并且�
   ```
 
 - 函数
-Linux 内核提供了一系列的函数来获取设备树中的节点或属性信息，这一系列函数都有一个统一的前缀 `of_`，因此也常被称为 `OF` 函数，原型位于 `include/linux/of.h` 文件中。
+Linux 内核提供了一系列的函数来获取设备树中的节点或属性信息，这一系列函数都有一个统一的前缀 `of_`，因此也常被称为 `OF` 函数，原型位于 `include/linux/of.h` 文件中。`of` 表示 `open firmware` 即开放固件。
+
+  - 处理 `dtb`：
+    ```
+    of_fdt.h    // 一般用不到
+    ```
+  - 处理 `device_node`：
+    ```
+    of.h          // 提供设备树的一般处理函数
+    of_address.h  // 地址相关的函数
+    of_dma.h      // 设备树中 DMA 相关属性的函数
+    of_gpio.h     // gpio 相关的函数
+    of_graph.h    // gpu 相关驱动中用到的函数，从设备树中获得 gpu 信息
+    of_iommu.h    // 很少用到
+    of_irq.h      // 中断相关函数
+    of_mdio.h     // MDIO（Ethernet PHY）API
+    of_net.h      // OF helpers for network devices
+    of_pci.h      // PCI 相关函数
+    of_pdt.h      // 很少用到
+    of_reserved_mem.h   // reserved_mem 的相关函数
+    ```
+  - 处理 `platform_device`：
+    ```
+    of_platform.h     // 把 device_node 转换为 platform_device 时用到的函数
+    of_device.h       // 设备相关的函数，比如 of_match_device
+    ```
+
+  ---
   - 查找节点函数：
       ```c
       struct device_node* of_find_node_by_name(struct device_node *from, const char *name)`;
@@ -272,3 +371,7 @@ Linux 内核提供了一系列的函数来获取设备树中的节点或属性�
     /* 返回值：NULL 时表示内存映射失败 */
     void __iomem *of_iomap(struct device_node *np, int index);
     ```
+
+## 向设备树中添加节点信息
+- 参考：
+  - Linux 源码目录：`/Documentation/devicetree/bindings`。例如在 I.MX6ULL 这颗 SOC 的 I2C 下添加一个节点，可以查看 `/Documentation/decicetree/bingdings/i2c/i2c-imx.txt`（由具体芯片厂商提供各自的绑定参考指南，目录下找不到也是需要联系芯片厂商提供）。
