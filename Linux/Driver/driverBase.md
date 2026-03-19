@@ -1,7 +1,6 @@
 # Linux 驱动开发基石
 ## 阻塞与非阻塞 I/O
-
-- `poll`：使用 `poll` 时，如果传入的超时时间不为 0，这种访问方式也是阻塞的。如果超时时间为 0，这样即使没有数据它也会立即返回，属于非阻塞方式。
+当应用程序对设备驱动进行操作的时候，如果不能获取到设备资源，那么阻塞式 I/O 就会将应用程序对应的线程挂起，直到设备资源可以获取为止。而对于非阻塞 I/O，应用程序的线程不会被挂起。
 
 - 可以让 `read` 函数既能工作于阻塞方式，也可以工作于非阻塞方式：
   - 默认是阻塞方式；
@@ -18,6 +17,8 @@
    fcntl(fd, F_SETFL, flags & ~O_NOBLOCK);         // 阻塞方式
    ```
 
+- `poll`：使用 `poll` 时，如果传入的超时时间不为 0，这种访问方式也是阻塞的。如果超时时间为 0，这样即使没有数据它也会立即返回，属于非阻塞方式。
+
 - 注意：
   - 对于普通文件、块设备文件，`O_NOBLOCK` 不起作用；
   - 对于字符设备文件，`O_NOBLOCK` 起作用的前提是驱动程序针对 `O_NOBLOCK` 做了处理；
@@ -30,7 +31,44 @@
 - 当驱动中有数据时立即返回结果；
 - 当驱动中没有数据时，APP 休眠（被挂起，运行状态改为非 `RUNNING`，内核调度器不会让它运行）。APP 在内核态被阻塞。当有数据产生时唤醒被阻塞的 APP，继续执行剩下的代码。
 
+阻塞访问最大的好处就是当设备文件不可操作时进程可以进入休眠状态，从而让出 CPU 资源。
+
 可以在中断服务程序中将 APP 唤醒，它不属于 APP 的上下文，不能在处理过程中休眠（也不能调用会导致休眠的函数）。
+
+Linux 内核提供了等待队列（`wait queue`）来实现阻塞进程的唤醒工作，如果要在驱动中使用等待队列，必须创建并初始化一个等待队列头：
+```c
+// include/linux/wait.h
+struct __wait_queue_head {
+   spinlock_t lock;
+   struct list_head task_list;
+};
+typedef struct __wait_queue_head wait_queue_head_t;
+
+// 初始化等待队列头
+void init_waitqueue_head(wait_queue_head_t *q);
+// 使用宏完成定义 + 初始化
+DECLARE_WAIT_QUEUE_HEAD
+```
+每个访问设备的进程都是一个队列项：
+```c
+struct __wait_queue {
+   unsigned int flags;
+   void *private;
+   wait_queue_func_t func;
+   struct list_head task_list;
+};
+typedef struct __wait_queue wait_queue_t;
+
+// 定义并初始化一个等待队列项
+DECLARE_WAITQUEUE(name, tsk)
+// 其中 name 表示等待队列项的名字，tsk 表示这个等待队列项对应哪个任务（进程），一般设置为 current。
+// 在 Linux 内核中 current 相当于一个全局变量，表示当前进程。
+```
+当设备操作需要被阻塞的时候需要将对应的等待队列项添加到等待队列头中，只有添加到等待队列头中以后进程才能进入休眠状态。当设备可以访问以后再将进程对应的等待队列项从等待队列头中移除即可。将队列项添加/移除等待队列头：
+```c
+void add_wait_queue(wait_queue_head_t *q, wait_queue_t *wait);
+void remove_wait_queue(wait_queue_head_t *q, wait_queue_t *wait);
+```
 
 1. 休眠函数
    参考 `include/linux/wait.h`
@@ -89,6 +127,194 @@
       return key;
    }
    ```
+   ```c
+   // 通过按键实现阻塞、非阻塞、POLL 读取
+   #include <linux/types.h>
+   #include <linux/kernel.h>
+   ...
+   #include <asm/mach/map.h>
+   #include <asm/uaccess.h>
+   #include <asm/io.h>
+
+   #define IMX6UIRQ_CNT    1
+   #define IMX6UIRQ_NAME   "blockio"
+   #define KEY0VALUE       0x01
+   #define INVAKEY         0xFF
+   #define KEY_NUM         1
+
+   struct irq_keydesc {
+      int gpio;
+      int irqnum;
+      unsigned char value;
+      char name[10];
+      irqreturn_t (*handler)(int, void *);
+   };
+
+   struct imx6uirq_dev {
+      dev_t devid;
+      struct cdev cdev;
+      struct class *class;
+      struct device *device;
+      int major;
+      int minor;
+      struct device_node *nd;
+      atomic_t keyvalue;
+      atomic_t releasekey;
+      struct timer_list timer;
+      struct irq_keydesc irqkeydesc[KEY_NUM];
+      unsigned char curkeynum;
+      wait_queue_head_t r_wait;
+   };
+
+   struct imx6uirq_dev imx6uirq;
+
+   static irqreturn_t key0_handler(int irq, void *dev_id) {
+      struct imx6uirq_dev *dev = (struct imx6uirq_dev*)dev_id;
+
+      dev->curkeynum = 0;
+      dev->timer.data = (volatile long)dev_id;
+      mod_timer(&dev->timer, jiffies + msecs_to_jiffies(10));
+      return IRQ_RETVAL(IRQ_HANDLED);
+   }
+
+   static timer_function(unsigned long arg) {
+      unsigned char value;
+      unsigned char num;
+      struct irq_keydesc *keydesc;
+      struct imx6uirq_dev *dev = (struct imx6uirq_dev *)arg;
+
+      num = dev->curkeynum;
+      keydesc = &dev->irqkeydesc[num];
+      value = gpio_get_value(keydesc->gpio);
+      if (value == 0) {
+         atomic_set(&dev->keyvalue, keydesc->value);
+      } else {
+         atomic_set(&dev->keyvalue, 0x80 | keydesc->value);
+         atomic_set(&dev->releasekey, 1);
+      }
+
+      if (atomic_read(&dev->releasekey)) {
+         wake_up_interruptible(&dev->r_wait);
+      }
+   }
+
+   static int keyio_init(void) {
+      unsigned char i = 0;
+      char name[10];
+      int ret = 0;
+      
+      // ...
+
+      init_timer(&imx6uirq.timer);
+      imx6uirq.timer.function = timer_function;
+
+      init_waitqueue_head(&imx6uirq.r_wait);
+      return 0;
+   }
+
+   static int imx6uirq_open(struct inode *inode, struct file filp) {
+      filp->private_data = &imx6uirq;
+      return 0;
+   }
+
+   static ssize_t imx6uirq_read(struct file *filp, char __user *buf, size_t cnt, loff_t *offt) {
+      int ret = 0;
+      unsigned char keyvalue = 0;
+      unsigned char releasekey = 0;
+      struct imx6uirq_dev *dev = (struct imx6uirq_dev *)filp->private_data;
+
+   if (filp->f_flags & O_NOBLOCK) {
+      if (atomic_read(&dev->releasekey) == 0)
+         return -EAGAIN;
+   } else {
+      ret = wait_event_interruptible(dev->r_wait, atomic_read(&dev->releasekey));
+
+      if (ret) {
+         goto wait_error;
+      }
+   }
+   // 以下为单独的阻塞 IO 部分
+   #if 0
+      ret = wait_event_interruptible(dev->r_wait, atomic_read(&dev->releasekey));
+      if (ret) {
+         goto wait_error;
+      }
+   #endif
+      DECLARE_WAITQUEUE(wait, current);
+      if (atomic_read(&dev->releasekey) == 0) {
+         // 没有按键按下
+         add_wait_queue(&dev->r_wait, &wait);
+         __set_current_state(TASK_INTERRUPTIBLE);
+         schedule();
+         if (signal_pending(current)) {
+            // 判断是否为信号引起的唤醒
+            ret = -ERESTARTSYS;
+            goto wait_error;
+         }
+         __set_current_state(TASK_RUNNING);
+         remove_wait_queue(&dev->r_wait, &wait);
+      }
+      keyvalue = atomic_read(&dev->keyvalue);
+      releasekey = atomic_read(&dev->releasekey);
+      // ...
+      return 0;
+   wait_error:
+      set_current_state(TASK_RUNNING);
+      remove_wait_queue(&dev->r_wait, &wait);
+      return ret;
+   data_error:
+      return -EINVAL;
+   // 到这里为止：单独的阻塞 IO 部分
+   wait_error:
+      return ret;
+   data_error:
+      return -EINVAL;
+   }
+
+   unsigned int imx6uirq_poll(struct file *filp, struct poll_table_struct *wait) {
+      unsigned int mask = 0;
+      struct imx6uirq_dev *dev = (struct imx6uirq_dev *)filp->private_data;
+      poll_wait(filp, &dev->r_wait, wait);
+      if (atomic_read(&dev->releasekey)) {
+         mask = POLLIN | POLLRDNORM;
+      }
+      return mask;
+   }
+
+   static struct file_operations imx6uirq_fops = {
+      .owner = THIS_MODULE,
+      .open = imx6uirq_open,
+      .read = imx6uirq_read,
+   };
+
+   static int __init imx6uirq_init(void) {
+      if (imx6uirq.major) {
+         imx6uirq.devid = MKDEV(imx6uirq.major, 0);
+         register_chrdev_region(imx6uirq.devid, IMX6UIRQ_CNT, IMX6UIRQ_NAME);
+      } else {
+         alloc_chrdev_region(&imx6uirq.devid, 0, IMX6UIRQ_CNT, IMX6UIRQ_NAME);
+         imx6uirq.major = MAJOR(imx6uirq.devid);
+         imx6uirq.minor = MINOR(imx6uirq.devid);
+      }
+      // ...
+
+      atomic_set(&imx6uirq.keyvalue, INVAKEY);
+      atomic_set(&imx6uirq.releasekey, 0);
+      keyio_init();
+      return 0;
+   }
+
+   static void __exit imx6uirq_exit(void) {
+      unsigned i = 0;
+      del_timer_sync(&imx6uirq.timer);
+      ...
+      class_destory(imx6uirq.class);
+   }
+
+   module_init(imx6uirq_init);
+   module_exit(imx6uirq_exit);
+   MODULE_LICENSE("GPL");
+   ```
    考虑 `O_NOBLOCK` 方式的实现：
    ```c
    static ssize_t drv_read(struct file *fp, char __user *buf, size_t count, loff_t *ppos) {
@@ -122,6 +348,7 @@ APP 根据 `poll` 函数的返回值就可以知道是否有数据，如果有�
 3. 应用程序使用
 
 4. 内核 poll 机制详解
+5. `poll`、`select` 以及 `epoll`
 
 ## 异步通知
 **适用场景**：使用“休眠-唤醒”、“POLL 机制”时都需要休眠等待某个事件发生，两者的区别在于后者可以指定休眠的时长。如果 APP 不想休眠，也可以通过异步通知机制使得驱动程序在有数据时主动通知 APP，APP 收到信号后执行处理函数。
@@ -758,3 +985,290 @@ APP 根据 `poll` 函数的返回值就可以知道是否有数据，如果有�
          - APP 调用 mmap 后，会导致驱动程序的 mmap 函数被调用，最终 APP 的虚拟地址和驱动程序中的物理地址就建立了映射关系（驱动和 APP 中的虚拟地址指向同一块物理地址）。APP 可以直接访问驱动程序的 buffer。
 
 ## 同步与互斥
+### 原子操作
+1. 原子整型操作
+   Linux 内核定义了叫做 `atomic_t` 的结构体来完成整型数据的原子操作，在使用中用原子变量来替代整型变量：
+   ```c
+   typedef struct {
+      int counter;
+   }  atomic_t;
+
+   // 定义原子变量
+   atomic_t a;
+   atomic_t b = ATOMIC_INIT(0);  // 定义并赋初始值 0
+
+   // 64 位原子结构体
+   typedef struct {
+      long long counter;
+   } atomic64_t;
+   // API 函数将 atomic_ 前缀换成 atomic64_，将 int 换为 long long。
+   ```
+   API 函数：
+   | 函数 | 描述|
+   | ---- | ---- |
+   | ATOMIC_INIT(int i) | 定义原子变量的时候对其初始化 |
+   | int atomic_read(atomic_t *v) | 读取 v 的值并返回 |
+   | void atomic_set(atomic_t *v, int i) | 向 v 写入 i 值 |
+   | void atomic_add(int i, atomic_t *v) |  |
+   | void atomic_sub(int i, atomic_t *v) |  |
+   | void atomic_inc(atomic_t *v) | 给 v 加 1 |
+   | void atomic_dec(atomic_t *v) | 从 v 减 1 |
+   | int atomic_dec_return(atomic_t *v) | 从 v 减 1，并返回 v 的值 |
+   | int atomic_inc_return(atomic_t *v) | 给 v 加 1，并返回 v 的值 |
+   | int atomic_sub_and_test(int i, atomic_t *v) | 从 v 减 i，如果结果为 0 就返回真，否则返回假 |
+   | int atomic_add_negative(int i, atomic_t *v) | 给 v 加 i，如果结果为负就返回真，否则返回假 |
+   | int atomic_dec_and_test(atomic_t *v) | 从 v 减 1，如果结果为 0 就返回真，否则返回假 |
+   | int atomic_inc_and_test(atomic_t *v) | 给 v 加 1，如果结果为 0 就返回真，否则返回假 |
+2. 原子位操作
+   | 函数 | 描述|
+   | ---- | ---- |
+   | void set_bit(int nr, void *p) | 将 p 地址的第 nr 位置 1 |
+   | void clear_bit(int nr, void *p) | 将 p 地址的第 nr 位置清零 |
+   | void change_bit(int nr, void *p) | 将 p 地址的第 nr 位进行翻转 |
+   | int test_bit(int nr, void *p) | 获取 p 地址的第 nr 位的值 |
+   | int test_and_set_bit(int nr, void *p) | 将 p 地址的第 nr 位置 1，并且返回 nr 位原来的值 |
+   | int test_and_clear_bit(int nr, void *p) | 将 p 地址的第 nr 位清零，并且返回 nr 位原来的值 |
+   | int test_and_change_bit(int nr, void *p) | 将 p 地址的第 nr 位翻转，并且返回 nr 位原来的值 |
+### 自旋锁
+等待自旋锁的线程会一直处于自旋状态（这样会浪费处理器时间，降低系统性能），所以自旋锁的**持有时间**不能太长。
+
+适用于短时期的轻量级加锁，如果遇到需要长时间持有锁的场景则不适用。
+
+**自旋锁会自动禁止抢占**，因此被自旋锁保护的**临界区一定不能调用任何能够引起睡眠和阻塞的 API 函数**，否则的话可能会导致死锁现象的发生。（线程A 得到锁后如果在持有锁期间进入了休眠状态，那么线程 A 会自动放弃 CPU 适用权。此时如果线程 B 开始运行且它也想获取锁，但是此时锁被线程 A 持有而且内核抢占还被禁止了，就会导致线程 B 无法被调度出去，那么线程 A 就无法运行，从而导致死锁的发生）
+
+如果中断也需要访问共享资源：中断里是可以使用自旋锁的，但是**在中断里使用自旋锁时，在获取锁之前一定要先禁止本地中断，即本 CPU 中断**（对于多核 CPU 来说会有多个 CPU 核），否则可能导致死锁现象的发生。（线程 A 先获取了自旋锁，当线程 A 运行到函数 A 时产生了中断，此时如果在中断中也需要获取该自旋锁就会导致死锁的发生）最好的解决方法就是在（线程 A）获取锁之前关闭本地中断。
+
+在编写驱动程序的时候须考虑到可移植性，因此不管当前用的是单核还是多核的 SOC，都应当作多核 SOC 来编写程序。
+
+```c
+typedef struct spinlock {
+   union {
+      struct raw_spinlock rlock;
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+#define LOCK_PADSIZE (offsetof(struct raw_spinlock, dep_map))
+      struct {
+         u8 __padding[LOCK_PADSIZE];
+         struct lockdep_map dep_map;
+      };
+#endif
+   };
+} spinlock_t;
+
+// 定义自旋锁
+spinlock_t lock;
+```
+
+API 函数：
+```c
+// 定义并初始化一个自旋变量
+DEFINE_SPINLOCK(spinlock_t lock)
+// 初始化自旋锁
+int spin_lock_init(spinlock_t *lock);
+// 获取指定的自旋锁，即加锁
+void spin_lock(spinlock_t *lock);
+// 解锁
+void spin_unlock(spinlock_t *lock);
+// 尝试加锁，如果加锁失败则返回 0
+int spin_trylock(spinlock_t *lock);
+// 检查指定的自旋锁是否被获取，如果没有则返回非 0，否则返回 0
+int spin_is_locked(spinlock_t *lock);
+```
+   - 上述函数适用于 SMP 或支持抢占的单 CPU 下线程之间的并发访问；
+
+自旋锁与中断相关的 API 函数：
+```c
+// 禁止本地中断，并获取自旋锁
+void spin_lock_irq(spinlock_t *lock);
+// 激活本地中断，并释放自旋锁
+void spin_unlock_irq(spinlock_t *lock);
+// 保存中断状态，禁止本地中断，并获取自旋锁
+// void spin_lock_irqsave(spinlock_t *lock, unsigned long flags);
+#define spin_lock_irqsave(lock, flags) \
+   do {
+      flags = arch_local_save_flags();
+      arch_local_irq_disable();
+      spin_lock(lock);
+   } while (0)
+// 将中断状态恢复到以前的状态，并激活本地中断，释放自旋锁
+void spin_unlock_irqrestore(spinlock_t *lock, unsigned long flags);
+```
+   - `spin_lock_irqsave`：禁用当前 CPU 的本地中断，并保存中断状态到 `flags`，同时获取指定的自旋锁 `lock` 以确保临界区代码在**所有 CPU 上**互斥运行；
+   - `spin_lock_irqsave` 实际上是一个宏，所以能过通过 `flags` 获取 CPU 的中断状态；
+   - 一般在线程中使用 `spin_lock_irqsave`/`spin_lock_irqrestore`，在中断中使用 `spin_lock`/`spin_unlock`：
+      ```c
+      DEFINE_SPINLOCK(lock)
+
+      // 线程 A
+      void functionA() {
+         unsigned long flags;
+         spin_lock_irqsave(&lock, flags);
+         // 临界区
+         spin_unlock_irqrestore(&lock, flags);
+      }
+
+      // 中断服务函数
+      void irq() {
+         spin_lock(&lock);
+         // 临界区
+         spin_unlock(&lock);
+      }
+      ```
+
+在中断下半部里使用自旋锁：
+```c
+// 关闭下半部，并获取自旋锁
+void spin_lock_bh(spinlock_t *lock);
+// 打开下半部，并释放自旋锁
+void spin_unlock_bh(spinlock_t *lock);
+```
+
+### 读写自旋锁
+一次只能允许一个写操作，即只能一个线程持有写锁，而且不能进行读操作。当没有写操作时允许多个线程持有读锁，可以进行并发的读操作。
+
+```c
+typedef struct {
+   arch_rwlock_t raw_lock;
+} rwlock_t;
+
+// 定义、初始化
+DEFINE_RWLOCK(rwlock_t lock);
+void rwlock_init(rwlock_t *lock);
+
+// 读锁
+void read_lock(rwlock_t *lock);     // 获取读锁
+void read_unlock(rwlock_t *lock);   // 释放读锁
+void read_lock_irq(rwlock_t *lock); // 禁止本地中断，并且获取读锁
+void read_unlock_irq(rwlock_t *lock);  // 打开本地中断，并且释放读锁
+void read_lock_irqsave(rwlock_t *lock, unsigned long flags);
+void read_lock_irqrestore(rwlock_t *lock, unsigned long flags);
+void read_lock_bh(rwlock_t *lock);
+void read_unlock_bh(rwlock_t *lock);
+
+// 写锁
+void write_lock(rwlock_t *lock);
+void write_unlock(rwlock_t *lock);
+void write_lock_irq(rwlock_t *lock);
+void write_unlock_irq(rwlock_t *lock);
+void write_lock_irqsave(rwlock_t *lock, unsigned long flags);
+void write_unlock_irqrestore(rwlock_t *lock, unsigned long flags);
+void write_lock_bh(rwlock_t *lock);
+void write_unlock_bh(rwlock_t *lock);
+```
+
+### 顺序锁
+顺序锁在读写锁的基础上衍生而来，使用读写锁的时候读操作和写操作不能同时进行。**使用顺序锁允许在写的时候进行读操作，但不允许同时进行写操作**。如果在读的过程中发生了写操作，最好重新进行读取，保证数据完整性。
+
+**顺序锁保护的资源不能是指针**。因为如果在写操作的时候可能会导致指针无效，这时如果恰有读操作访问指针的话会导致错误（读取野指针导致系统崩溃）。
+
+```c
+typedef struct {
+   struct seqcount seqcount;
+   spinlock_t lock;
+} seqlock_t;
+
+
+// 定义、初始化
+DEFINE_SEQLOCK(seqlock_t sl)
+void seqlock_ini(seqlock_t *sl)
+
+// 写操作
+void write_seqlock(seqlock_t *sl)
+void write_sequnlock(seqlock_t *sl)
+void write_seqlock_irq(seqlock_t *sl)
+void write_sequnlock_irq(seqlock_t *sl)
+void write_seqlock_irqsave(seqlock_t *sl, unsigned long flags)
+void write_sequnlock_irqrestore(seqlock_t *sl, unsigned long flags)
+void write_seqlock_bh(seqlock_t *sl)
+void write_sequnlock_bh(seqlock_t *sl)
+
+// 读操作
+// 读单元访问共享资源的时候调用此函数，此函数会返回顺序锁的顺序号
+unsigned read_seqbegin(const seqlock_t *sl)
+// 读结束以后调用此函数检查在读的过程中有没有对资源进行写操作，如果有的话就要重读
+unsigned read_seqretry(const seqlock_t *sl, unsigned start)
+```
+### 信号量
+常用于控制对共享资源的访问。信号量的值常用于表示可用的资源数量，通过信号量可控制访问资源的线程数。
+
+如果信号量初始化值大于 1，则该信号量就是计数型信号量，此时它不能用于互斥访问。如果要互斥地访问共享资源，那么信号量地值就不能大于 1，此时信号量就是一个二值信号量。
+
+**相比于自旋锁，信号量可以使线程进入休眠状态**。但是信号量的开销要比自旋锁大，因为需要线程切换。
+
+特点：
+   1. 可以使等待资源线程进入休眠状态，因此适用于占用资源比较久的场合；
+   2. **信号量不能用于中断中**，因为中断中不允许休眠；
+   3. 如果共享资源的持有时间比较短，则不适合适用信号量，因为频繁的休眠、切换线程引起的开销要远大于信号量带来的那点优势；
+
+```c
+struct semaphore {
+   raw_spinlock_t lock;
+   unsigned int count;
+   struct list_head wait_list;
+};
+
+// API 
+DEFINE_SEMAPHORE(name)
+void sema_init(struct semaphore *sem, int val)
+
+// 获取信号量，可能会导致休眠，因此不能在中断中使用
+void down(struct semaphore *sem)
+// 尝试获取信号量，如果能够获取到则获取并返回 0，否则返回非 0 并且不会进入休眠
+void down_trylock(struct semaphore *sem)
+// 获取信号量，和 down 类似，只是使用 down 进入休眠状态的线程不能被信号打断
+// 使用此函数进入休眠以后是可以被信号打断的
+void down_interruptible(struct semaphore *sem)
+// 释放信号量
+void up(struct semaphore *sem);
+
+
+// 使用
+struct semaphore sem;
+sema_init(&sem, 1);
+
+down(&sem);
+// 临界区
+up(&sem);
+```
+### 互斥体
+将信号量的值设置为 1 就可以使用信号量进行互斥访问了。Linux 提供了一个更专业的机制进行互斥，即互斥体：`mutex`。
+
+互斥体访问表示一次只能有一个线程访问共享资源，不能递归申请互斥体。
+
+`mutex` 可以导致休眠，因此不能在中断中使用（中断中只能使用自旋锁）。其保护的临界区可以调用引起阻塞的 API 函数。
+
+`mutex` 必须由持有者释放。
+
+```c
+struct mutex {
+   // 1: unlocked, 0: locked, negative: locaked, possible waiters
+   atomic_t count;
+   spinlock_t wait_lock;
+};
+
+// api
+DEFINE_MUTEX(name)
+void mutex_init(struct mutex *lock)
+
+void mutex_lock(struct mutex *lock)
+void mutex_unlock(struct mutex *lock)
+// 获取成功返回 1，失败返回 0
+int mutex_trylock(struct mutex *lock)
+// 如果 mutex 已经被获取就返回 1，否则返回 0
+int mutex_is_locked(struct mutex *lock)
+// 使用此函数获取 mutex 失败进入休眠以后可以被信号打断
+int mutex_lock_interruptible(struct mutex *lock)
+
+// 使用
+struct mutex lock;
+mutex_init(&lock);
+
+mutex_lock(&lock);
+// 临界区
+mutex_unlock(&lock);
+```
+
+### RCU
+`RCU, Read Copy Update`
+- 参考：
+  1. [Linux 内核-RCU 概念](https://docs.linuxkernel.org.cn/RCU/rcu.html)
