@@ -109,6 +109,54 @@
 > - sysfs 目录结构以及其中包含的属性定义了一个内核与用户空间之间的 ABI。对于任何 ABI，其自身的稳定和适当的文档是非常重要的。所有新的 sysfs 属性必须在 `Documentation/ABI` 中有文档。
 > - 只要内核配置中定义了 CONFIG_SYSFS，sysfs 总是被编译进内核。你可以通过以下命令挂载它：`mount -t sysfs sysfs /sys`。
 
+## 各目录间的关系
+> [嵌入式 Linux -- uevent 机制：uevent 原理分析](https://blog.csdn.net/W1107101310/article/details/80211885)
+
+- `/sys/block`：历史遗留问题，存放块设备，提供以设备名（如 sda）到 `/sys/devices` 的符号连接；
+- `/sys/bus`：按总线类型分类，在每个总线目录下存在 `devices` 和 `drivers` 两个子目录。前者包含总线上设备的符号链接，指向 `/sys/devices`，后者包含了该总线所需的所有驱动的符号链接。对应 kernel 中的 `struct bus_type`；
+- `/sys/class`：按设备功能分类，如输入设备在 `/sys/class/input` 之下，图形设备在 `/sys/class/graphics` 之下，是指向 `/sys/devices` 目录下对应设备的符号链接。对应 kernel 中的 `struct class`；
+- `/sys/dev`：按设备驱动程序分层（字符设备、块设备），提供以 `major:minor` 为名到 `/sys/devices` 的符号链接。对应 kernel 中的 `struct device_driver`；
+- `/sys/devices`：包含所有被发现的注册在各种总线上的各种物理设备。所有的物理设备都按其在总线上的拓扑结构来显示，除了 `platform device` 和 `system device`。`platform device` 一般是挂在芯片内部高速或者低速总线上的各种控制器和外设，能被 CPU 直接寻址。`system device` 不是外设，是芯片内部的核心结构，比如 CPU、timer 等，他们一般没有相关的 driver，但是会有一些体系结构相关的代码来配置它们对应 kernel 中的 `struct device`；
+
+## sys文件系统、设备模型与挂载
+- 设备（kobject）在系统中注册，就会有一个目录在 sysfs 中被创建；
+- 挂载的本质是将不同存储设备（硬盘分区、U盘、网络共享、内存文件系统等）**嫁接**到统一的目录树中，使它们成为全局命名空间的一部分；
+- 设备的发现和存储设备的挂载是两种不同的机制。
+  - 设备的发现是由内核（与驱动相关）自动完成的，通过 uevent 机制在 sysfs 中创建设备节点文件，比如 `/dev/sda1`，它是裸的硬件接口；
+  - 存储设备的挂载并不是自动完成的，将设备上的文件系统接入 vfs 树，创建对应入口文件，比如 `/mnt/data`，它经过了 vfs 的解析；
+  - 它们是两种互相独立的机制，挂载是后续可选的步骤。没有挂载时，可以通过 sysfs 中的文件访问到设备，可以读取原始字节数据，但无法看到设备中的文件。
+- sysfs 的挂载
+  - sysfs 是伪文件系统（pseudo-filesystem），完全由内核动态生成，不依赖任何底层存储设备，完全在内存中；
+  - sysfs 文件系统挂载到 `/sys` 目录下；
+  - 由 `initramfs` 或内核直接挂载，挂载命令：`mount -t sysfs sysfs /sys`；
+  - `initramfs` 中的挂载脚本
+    - 内核解压启动；
+    - `setup_arch()` 初始化硬件架构；
+    - `vfs_caches_init()` 初始化 VFS 层；
+    - `mnt_init()` 初始化根文件系统相关（此时还没有用户空间）；
+    - `kernel_init()` 第一个线程 -> 如果配置了 initramfs，解压并挂载为临时根；如果没有 initramfs，尝试挂载真实根文件系统 -> 在用户空间 init 进程启动前/后，进行相关文件系统挂载：
+   ```sh
+   #/init (initramfs 中的第一个脚本，由内核直接执行)
+   #!/bin/sh
+
+   # 1. 挂载核心伪文件系统（无依赖！）
+   mount -t proc proc /proc   # 进程信息
+   mount -t sysfs sysfs /sys  # 设备模型
+   mount -t devtempfs devtenpfs /dev # 设备节点
+
+   # 2. 现在才能通过 /sys 访问设备信息
+   echo /sys/block/sda/dev    # 输出 8:0
+
+   # 3. 加载驱动（可能产生新的 /dev 节点）
+   modprobe ext4
+
+   # 4. 挂载真实根文件系统
+   mount /dev/sda1 /mnt/root
+
+   # 5. 切换根
+   exec switch_root /mnt/root /sbin/init
+   ```
+
 ## 使用
 `/sys` 目录下有很多内核、驱动的信息。
 
