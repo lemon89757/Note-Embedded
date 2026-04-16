@@ -1028,6 +1028,7 @@ uboot 在启动后可能会输出一些比较有用的信息：
    - 编译过程：
      - `./scripts/basic`：生成 `scripts/basic/fixdep` 这个软件；
      - 基于 `./scripts/kconfig/Makefile`，编译 `xxx_defconfig` 这个目标；
+      ![](../../img/uboot/260417-021838.png)
 
 ### make 流程
 
