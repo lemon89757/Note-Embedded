@@ -26,7 +26,7 @@
 ![](../../img/uboot/260415-174050.png)
 - `u-boot.bin`：编译出来的 uboot 二进制文件；
   - 需要注意的是：uboot 是个裸机程序，**需要在其前面加上头部（IVT、DCD 等数据）才能在 I.MX6U 上运行**。
-  - [ ] 补充不同的厂家在这部分都有哪些策略
+  - [ ] 补充不同的厂家在这部分都有哪些策略、头部的作用是什么
 - `u-boot.imx` 就是添加头部以后的 `u-boot.bin`，`u-boot.imx` 就是最终要烧写到开发板中的 uboot 镜像文件；
 
 ## 编译和烧写
@@ -112,7 +112,7 @@ uboot 在启动后可能会输出一些比较有用的信息：
 
    1. 修改环境变量
       ```bash
-      # 修改 uboot 启动延迟时间为 5 秒
+      # 修改 uboot 启动延迟时间为 5 秒，5 秒之后启动 Linux 系统
       setenv bootdelay 5
       saveenv
 
@@ -251,6 +251,356 @@ uboot 在启动后可能会输出一些比较有用的信息：
    3. `nfs` 命令
       nfs, network file system，即网络文件系统。可以通过 nfs 来实现在计算机之间通过网络来分享资源，比如将 Linux 镜像和设备树文件放到 ubuntu 主机中，然后通过 nfs 将这些内容下载到开发的 DRAM 中。
 
+      这样做的目的是方便调试 Linux 镜像和设备树，即网络调试，通过网络调试是 Linux 开发中最常用的调试方法。
+
+      虽然半导体厂商一般都会提供一个烧写固件的软件，但是这个软件使用起来比较复杂，一般用于量产的。
+
+      使用步骤：
+      1. 开启 ubuntu 主机的 nfs 服务，创建一个 nfs 使用的目录（后面开发板通过 nfs 访问的目录）
+         ```bash
+         # 安装 nfs 服务
+         sudo apt-get install nfs-kernel-server rpcbind
+
+         # 配置 nfs
+         sudo vi /etc/exports
+         # 在后面添加内容： /home/xxx/linux/nfs *(rw,sync,no_root_squash)，前面指定 nfs 使用的目录
+
+         # 重启 nfs 服务
+         sudo /etc/init.d/nfs-kernel-server restart
+         ```
+      2. 在开发板上通过 nfs 命令下载数据到 DRAM 中：
+         ```bash
+         # nfs 命令格式
+         nfs [loadAddress] [[hostIPaddr:]bootfilename]
+         ```
+         - `loadAddress`：要保存的 DRAM 地址；
+         - `[[hostIPaddr:]bootfilename]`：要下载的文件地址；
+         示例：
+         ```bash
+         # 将主机中的内核镜像文件下载到开发板 DRAM 的 0x80800000 地址处
+         nfs 80800000 192.168.1.253:/home/xxx/linux/zImage
+         ```
+   4. `tftp` 命令
+      同样用于网络下载，将数据保存到 DRAM 中，只是 tftp 命令使用 TFTP 协议。
+      
+      使用步骤：
+      1. ubuntu 主机作为 TFTP 服务器，需要安装 `tftp-hpa` 和 `tftpd-hpa`：
+         ```bash
+         sudo apt-get install tftp-hpa tftpd-hpa
+         sudo apt-get install xinetd
+         ```
+      2. 创建用于 tftp 传输的目录**并添加权限**：
+         ```bash
+         mkdir /home/xxx/linux/tftp
+         chmod 777 /home/xxx/linux/tftp
+         ```
+         - 注意，如果不给文件夹权限的话，uboot 不能从其中下载文件。
+      3. 配置 tftp
+         ```bash
+         # /etc/xinetd.d/tftp，没有的话自行创建，并在其中添加如下内容：
+         server tftp
+         {
+            socket_type = dgram
+            protocol    = udp
+            wait        = yes
+            user        = root
+            server      = /usr/sbin/in.tftpd
+            server_args = -s /home/xxx/linux/tftp/
+            disable     = no
+            per_source  = 11
+            cps         = 100 2
+            flags       = IPv4
+         }
+         ```
+      4. 启动 tftp 服务
+         ```bash
+         sudo service tftpd-hpa start
+         ```
+      5. 修改 `tftpd-hpa` 文件：
+         ```bash
+         # /etc/defualt/tftpd-hpa
+
+         TFTP_USERNAME="tftp"
+         TFTP_DIRECTORY="/home/xxx/linux/tftp"
+         TFTP_ADDRESS=":69"
+         TFTP_OPTIONS="-l -c -s"
+         ```
+      6. 重启 tftp 服务器
+         ```bash
+         sudo service tftpd-hpa restart
+         ```
+      7. 将文件拷贝到事先配置好的目录下，**并给予相应的权限**
+         ```bash
+         cp zImage /home/xxx/linux/tftp
+         cd /home/xxx/linux/tftp
+         chmod 777 zImage
+         ```
+      8. 在开发板中通过 tftp 命令下载文件
+         ```bash
+         # 命令格式
+         tftpboot [loadAddress] [[hostIPaddr:]bootfilename]
+
+         # 示例
+         tftp 80800000 zImage # tftp 不需要输入文件的绝对路径，只需要输入文件名即可
+         ```
+6. EMMC 和 SD 卡操作命令
+   一般认为 EMMC 和 SD 卡是同一个东西，uboot 中常用于操作 MMC 设备的命令为 `mmc`。
+
+   通过 `? mmc` 命令查看详细用法。
+
+   可以通过该命令可执行：输出 MMC 设备信息、读取其中的数据、向其中写入数据、扫描 MMC 设备、列出 MMC 分区信息、切换 MMC 设备、列出当前有效的所有 MMC 设备、设置 MMC 设备的分区、复位 MMC 设备、设置 DSR 寄存器的值等。设置指定 MMC 设备的 BOOT_BUS_WIDTH 域的值、设置指定 MMC 设备的 boot 和 RPMB 分区的大小、设置指定 MMC 设备的 PATITION_CONFIG 域的值。
+
+   1. 切换当前 MMC 设备
+      ```bash
+      mmc dev [dev] [part] # dev-设备号，part-分区号，不写的话默认为 0
+      mmc dev 0
+      mmc dev 1 2
+      ```
+   2. 查看分区
+      ```bash
+      mmc part
+      ```
+      - EMMC 3 个分区，第 0 个分区存放 uboot，第 1 个分区存放 Linux 镜像文件和设备树，第 2 个分区存放根文件系统；
+      - 如果通过 `mmc part` 只显示两个分区，是因为第 0 个分区没有格式化，所以识别不出来，但实际上是存在的；
+      - 一个新的 SD 卡默认只有一个分区，那就是分区 0（前面 uboot 烧写到 SD 卡，其实就是将 `u-boot.bin` 烧写到 SD 卡的分区 0 里面）；
+      - Linux 内核移植时，在 SD 卡中创建并格式化第二个分区，将 Linux 镜像文件和设备树文件存放到第二个分区中；
+   3. 读取和写入
+      ```bash
+      # 读取 mmc 设备的数据
+      mmc read addr blk# cnt
+
+      # 写入数据
+      mmc write addr blk# cnt
+      ```
+      - `addr`：数据读取到 DRAM 中的地址；
+      - `blk`：要读取的块起始地址（十六进制），一个块 512 个字节，同扇区一个意思；
+      - `cnt` 要读取的块数量（十六进制）；
+
+      示例：
+      ```bash
+      # 从当前所在 mmc 设备的 0x600 个块开始，读取 16 个块的数据到 DRAM 的 0x80800000 地址处
+      mmc read 80800000 600 10 # 0x600 * 512 是 EMMC 核心板 uboot 环境变量的存储起始地址
+
+      # 通过写入命令来将更新的 uboot 保存到 SD 卡中 
+      tftp 80800000 u-boot.imx
+      mmc dev 0 0
+      mmc write 80800000 2 2E6
+
+      # 更新 emmc 中的 uboot
+      mmc dev 1 0
+      tftp 80800000 u-boot.imx
+      mmc write 80800000 2 32E
+      mmc partconf 1 1 0 0 # 分区配置，emmc 需要这一步
+      ```
+      - 注意：**千万不要擦除 SD 卡或者 EMMC 的前两个块（扇区），里面保存着分区表**；
+   4. 擦除指令
+      ```bash
+      mmc erase blk# cnt
+      ```
+7. FAT 格式文件系统操作指令
+   1. `fatinfo` 命令
+      用于查询指定 MMC 设备分区的文件系统信息。
+      ```bash
+      fatinfo <interface> <dev[:part]>
+      ```
+      - `interface`：表示接口，如 mmc；
+      - `dev`：设备号；
+      - `part`：分区；
+      示例：
+      ```bash
+      # 查询 emmc 分区 1 的文件系统信息
+      fatinfo mmc 1:1
+      ```
+   2. `fatls` 命令
+      用于查询 FAT 格式设备的目录和文件信息。
+      ```bash
+      fatls <interface> [<dev[:part]>] [directory]
+      ```
+      - `directory`：要查询的目录
+      示例：
+      ```bash
+      # 查询 emmc 分区 1 中的所有目录和文件
+      fatls mmc 1:1
+      ```
+   3. `fstype` 命令
+      用于查看 MMC 设备某个分区的文件系统格式。
+      ```bash
+      fstype <interface> <dev>:<part>
+      # 示例
+      fstype mmc 1:0 # 输出示例：fat
+      ```
+   4. `fatload` 命令
+      用于将指定的文件读取到 DRAM 中。
+      ```bash
+      fatload <interface> [<dev[:part]> [<addr> [<filename> [bytes [pos]]]]]
+      ```
+      - `addr`：保存到 DRAM 中的起始地址；
+      - `filename`：要读取的文件名字；
+      - `bytes`：读取多少个字节，0 或者省略表示读取整个文件；
+      - `pos`：相对于文件首地址的偏移，0 或者省略表示从文件首地址开始读取；
+      示例：
+      ```bash
+      # 将 emmc 分区 1 中的 zImage 读取到 DRAM 中的 0x80800000 地址处
+      fatload mmc 1:1 80800000 zImage
+      ```
+   5. `fatwrite` 命令
+      uboot 默认没有使能 `fatwrite` 命令，需要修改板子配置头文件，比如 `mx6ullevk.h`、`mx6ull_alientek_emmc.h` 等。找到开发板对应的配置头文件添加如下内容：
+      ```c
+      #define CONFIG_FAT_WRITE   // 使能 fatwrite
+      ```
+      `fatwrite` 命令用于将 DRAM 中的数据写入到 MMC 设备中：
+      ```bash
+      fatwrite <interface> <dev[:part]> <addr> <filename> <bytes>
+
+      # 示例，通过 fatwrite 命令在 uboot 中更新 linux 镜像文件和设备树
+      fatwrite mmc 1:1 80800000 zImage 6788f8 # 通过网络命令下载时可知文件大小
+      ```
+8. EXT 格式文件系统操作命令
+   uboot 有 ext2 和 ext4 这两种格式的文件系统的操作命令。常用命令 `ext2load`、`ext2ls`、`ext4load`、`ext4ls` 和 `ext4write`，用法与 fat 一样。
+9. NAND 操作命令
+   1. `nand info`：查看 NAND Flash 信息；
+   2. `nand device`：用于切换 NAND Flash。不过一般情况下 CPU 只有一个 NAND 接口（只有一个 NAND Flash）。
+   3. `nand erase`：**NAND Flash 的特性决定了在向 NAND Flash 写数据之前一定要先对要写入的区域进行擦除**。
+      ```bash
+      nand erase[.spread] [clean] off size # 从指定地址（off）开始，擦除指定大小（size）的区域；
+      nand erase.part [clean] partition # 擦除指定的分区
+      nand erase.chip [clean] # 全篇擦除
+      ```
+   4. `nand write`
+      ```bash
+      nand write addr off size
+      ```
+      - `addr`：要写入的数据首地址；
+      - `off`：NAND 中的目的地址；
+      - `size`：要写入的数据大小；
+      - 注意：IMX6ULL 要求 NAND 对应的 uboot 可执行文件还需要另外包含 BCB 和 DBBT，因此 u-boot.imx 不能直接烧写到 NAND 中。在使用 `mfgtool` 烧写系统到 NAND 里面时，`mfgtool` 会使用一个叫做 `kogs-ng` 的工具完成 BCB 和 DBBT 的添加。
+      - 可以使用 `nand write` 烧写 kernel 和 dtb。烧写之前需要先对 NAND 进行分区，即规划好 uboot、linux-kernel、设备树和根文件系统的存储区域：
+         ```
+         0x000000000000~0x0000003fffff：boot，4MB
+         0x000000400000~0x00000041ffff: env，环境变量，128KB
+         0x000000420000~0x00000051ffff: logo，启动图标
+         0x000000520000~0x00000061ffff: dtb，1MB
+         0x000000620000~0x000000e1ffff: kernel，8MB
+         0x000000e20000~0x000020000000: rootfs
+         ```
+      - kernel 和 dtb 的更新
+         ```bash
+         # kernel
+         tftp 0x87800000 zImage
+         nand erase 0x620000 0x800000
+         nand write 0x87800000 0x620000 0x800000
+         # dtb
+         tftp 0x87800000 imx6ull-14x14-emmc-7-1024x600-c.dtb
+         nand erase 0x520000 0x100000
+         nand write 0x87800000 0x520000 0x100000
+         ```
+      - 根文件系统就不要在 uboot 中更新了，还是使用 NXP 提供的 `mfgtool` 工具来烧写，因为根文件系统太大，很可能超过开发板 DRAM 的大小，这样连下载都没办法。
+   5. `nand read`: 命令格式：`nand read addr off size`；
+10. 设备树指令
+   `fdt` 命令
+   ```bash
+   # 首先将设备树文件读取到内存中，假设读取地址为 0x83000000
+
+   # 设置 fdt 地址
+   fdt addr 83000000
+
+   # 查看设备树的头信息
+   fdt headr
+
+   # 查看设备树文件的内容
+   fdt print
+   ```
+11. BOOT 操作命令
+    - uboot 的本质工作是引导 Linux，常用的跟 boot 相关的命令有：`bootz`、`bootm` 和 `boot`。
+
+    - 要启动 Linux，需要先将 Linux 镜像文件拷贝到 DRAM 中，如果使用设备树的话，也需要将设备树拷贝到 DRAM 中。
+      - 从 EMMC 或者 NAND 等存储设备中拷贝；
+      - 通过 nfs 或 tftp 从网络设备中拷贝；
+
+    1.  `bootz` 命令
+      ```bash
+      # 命令格式
+      bootz [addr [initrd[:size]] [fdt]]
+      ```
+      - `addr`：Linux 镜像文件在 DRAM 中的位置；
+      - `initrd`：initrd 文件在 DRAM 中的地址，如果不使用 initrd 的话，使用 `-` 代替即可；
+      - `fdt`：设备树文件在 DRAM 中的地址；
+      示例：
+      ```bash
+      # 通过网络启动 Linux
+      tftp 80800000 zImage
+      tftp 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb
+      bootz 80800000 - 83000000
+
+      # 通过 emmc 启动 Linux
+      # 先使用 fatls、fatwrite 命令确保在 emmc 中存在 Linux 镜像文件和设备树文件
+      fatload mmc 1:1 80800000 zImage
+      fatload mmc 1:1 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb
+      bootz 80800000 - 83000000
+      ```
+   2. `bootm` 命令
+      和 `bootz` 功能类似，但是 `bootm` 用于启动 uImage 镜像文件。
+      ```bash
+      # 不使用设备树
+      bootm addr
+
+      # 使用设备树
+      bootm [addr [initrd[:size]] [fdt]]
+      ```
+      - `addr`：uImage 镜像在 DRAM 中的首地址；
+      - 其他参数同 `bootz`；
+   3. `boot` 命令
+      `boot` 命令也是用来启动 Linux 系统的，**只是 `boot` 会读取环境变量 `bootcmd` 来启动 Linux 系统**。示例：
+      ```bash
+      # 通过 boot 命令直接从网络启动 Linux
+      setenv bootcmd 'tftp 80800000 zImage; tftp 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb; bootz 80800000 - 83000000'
+      saveenv
+      boot
+
+      # 通过 boot 命令直接从 emmc 启动 Linux
+      setenv bootcmd 'fatload mmc 1:1 80800000 zImage; fatload mmc 1:1 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb; bootz 80800000 - 83000000'
+      saveenv
+      boot
+      ```
+      - **uboot 倒计时结束以后就会启动 Linux 系统，其实就是执行的 `bootcmd` 中的启动命令**；
+      - 只要不修改 `bootcmd` 中的内容，以后每次开机 uboot 倒计时结束后都会使用相同的命令来启动 Linux；
+      - 在启动 Linux 内核时可能出现没有找到根文件系统的错误，这是因为没有设置 uboot 的 `bootargs` 环境变量。
+         ```bash
+         "kernel panic - not Syncing: VFS: Unable to mount root fs on unknown-block(0, 0)"
+         ```
+12. 其他命令
+   1. `reset` 命令：复位重启；
+   2. `go` 命令：用于跳到指定的地址处执行应用：
+      ```bash
+      go addr [arg ...]
+      ```
+      - 此时使用的可执行文件不需要再添加头部信息，因为 uboot 已经初始化好了 DDR；
+      示例程序：
+      ```bash
+      tftp 87800000 printf.bin
+      go 87800000
+      ```
+   3. `run` 命令：**用于运行环境变量中定义的命令**，例如，可以通过 `run bootcmd` 来运行 `bootcmd` 中的启动命令。示例：
+      ```bash
+      # 在环境变量中保存多种启动方式，后续只需通过 run 即可快速地以不同的方式启动
+      setenv mybootemmc 'fatload mmc 1:1 80800000 zImage; fatload mmc 1:1 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb; bootz 80800000 - 83000000'
+      setenv mybootnand 'nand read 80800000 4000000 800000; nand read 83000000 6000000 100000; bootz 80800000 - 83000000'
+      setenv mybootnet 'tftp 80800000 zImage; tftp 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb; bootz 80800000 - 83000000'
+      saveenv
+
+      # 启动 Linux
+      run mybootemmc
+      # 或
+      run mybootnand
+      # 或
+      run mybootnet
+      ```
+   4. `mtest`：内存读写测试命令。可以用来测试开发板上的 DDR，格式：
+      ```bash
+      mtest [start [end [pattern [iterations]]]]
+      ```
+      - `start`：要测试的 DRAM 开始地址；
+      - `end`：结束地址；
 
 ## Makefile 详解
 
