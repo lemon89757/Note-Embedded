@@ -2,6 +2,8 @@
 
 **uboot、Linux-kernel 和 rootfs** 这三者一起构成了一个完整的 Linux 系统，一个可以正常使用、功能完善的 Linux 系统。
 
+一个单板启动时，uboot 先运行，它的作用是启动内核。uboot 会把内核和设备树文件都读入内存，然后启动内核。在启动内核时会把设备树在内存中的地址告诉内核。
+
 ## 简介
 - uboot, Universal Bootloader，遵循 GPL 协议的开源软件。[官网](http://www.denx.de/wiki/U-Boot/)。
 
@@ -24,10 +26,117 @@
 ## uboot 目录内容
 编译完成后，uboot 目录下的内容如下：
 ![](../../img/uboot/260415-174050.png)
-- `u-boot.bin`：编译出来的 uboot 二进制文件；
-  - 需要注意的是：uboot 是个裸机程序，**需要在其前面加上头部（IVT、DCD 等数据）才能在 I.MX6U 上运行**。
-  - [ ] 补充不同的厂家在这部分都有哪些策略、头部的作用是什么
-- `u-boot.imx` 就是添加头部以后的 `u-boot.bin`，`u-boot.imx` 就是最终要烧写到开发板中的 uboot 镜像文件；
+
+### uboot 自带
+- api：与硬件无关的 api 函数
+- arch：与架构体系有关的代码
+  - 关注 `/arch/arm` 文件夹；
+  - `/arch/arm/mach-xxx`：与具体设备有关；
+  - `/arch/arm/cpu`：具体架构 cpu 代码，例如 `armv7`。**该目录下存在链接脚本文件 `u-boot.lds`**。
+- board：不同开发板的定制代码
+  - uboot 移植时参考的官方评估板所在位置；
+- cmd：命令相关代码
+- common：通用代码
+- configs：配置文件
+  - `make xxx_defconfig` 时所用到的配置文件所在位置；
+  - xxx_defconfig 文件，半导体或开发板厂商配置文件；
+  - 基于已有的配置文件做修改定制；
+- disk：磁盘分区相关代码
+- doc：文档
+- drivers：驱动代码
+- dts：设备树
+- examples：示例代码
+- fs：文件系统
+- include：头文件
+- lib：库文件
+- Licenses：许可认证相关文件
+- net：网络相关代码
+- post：上电自检程序
+- scripts：脚本文件
+- test：测试代码
+- tools：工具文件夹
+- config.mk：某 Makefile 会调用此文件
+- .mailmap：邮件列表
+- MAINTAINERS：维护者联系方式文件
+- README
+  - 描述 uboot 的详细信息，包括如何编译、各文件夹含义、相应的命名等；
+- Kbuild：用于生成一些和汇编有关的文件
+- Kconfig：图形配置界面描述文件
+- Makefile：顶层 Makefile 文件
+
+### 编译生成
+- .config：配置文件
+  - 文件中都是以 `CONFIG_` 开头的配置向，用于控制某项功能是否使能。y-使能：
+      ```Makefile
+      #bootm 命令使能，cmd/Makefile
+      ifndef CONFIG_SPL_BUILD
+      # core command
+      obj-y += boot.o
+      obj-$(CONFIG_CMD_BOOTM) += bootm.o
+      obj-y += help.o
+      obj-y += version.o
+      ```
+      - 通过让 `CONFIG_CMD_BOOTM=y` 使 make 目标 `obj-y` 中添加了 `bootm.o` 这一项，进而编译 `cmd/bootm.c` 文件，将 bootm 相关内容被编译到 uboot 中，可以在 uboot 的使用中调用 bootm 命令（相当于使能了 bootm）；
+- .u-boot.xxx.cmd：一系列的命令文件；
+   1. `.u-boot.cmd`
+      ```bash
+      cmd_u-boot := arm-linux-gnueabihf-ld.bfd -pie --gc-sections -Bstatic 
+      -Ttext 0x87800000 -o u-boot -T u-boot.lds 
+      arch/arm/cpu/armv7/start.o 
+      --start-group arch/arm/cpu/built-in.o arch/arm/cpu/armv7/built-in.o arch/arm/imx-common/built-in.o ... net/built-in.o test/built/built-in.o test/dm/built-in.o --end-group 
+      arch/arm/lib/eabi_compat.o 
+      -L /usr/local/arm/gcc-linaro-.../bin/../lib/gcc/arm-linux-gnueabihf/4.9.4 -lgcc 
+      -Map u-boot.map
+      ```
+      - `arm-linux-gnueabihf-ld.bfd`：链接工具；
+      - `-pie`：
+      - `--gc-section`：
+      - `Bstatic`：
+      - `Ttext 0x87800000`：指定生成文件的链接地址；
+      - `-o u-boot`：输出的文件为 u-boot；
+      - `-T u-boot.lds`：指定链接脚本文件；
+      - `arch/arm/cpu/armv7/start.o`：`start.o` 位于生成的 u-boot 文件的头部，其中包含的信息与中断向量表等有关；
+      - `--start-group` ~ `--end-group`：生成 u-boot 需要链接的其他文件，它们都以 `built-in.o` 命名，遵循同一套命名规则。可以通过对应文件下的 Makefile 文件找到这些 `built-in.o` 文件都是各个模块自身内部链接完后生成的文件，它们都编译到 u-boot 内部。**可以通过配置文件来设置哪些模块被编译到 u-boot 内部**；
+      - `arch/arm/lib/eabi_compat.o`：u-boot 还依赖架构下的库文件；
+      - `-L ...`：指定库文件路径；
+      - `-lgcc`：需要链接到 `gcc` 库文件；
+      - `-Map u-boot.map`：输出映射文件；
+   2. `.u-boot.nodtb.bin.cmd`
+      ```bash
+      cmd_u-boot-nodtb.bin := arm-linux-gnueabihf-objcopy --gap-fill=0xff -j .text -j .secure_text -j .rodata -j .hash -j .data -j .got -j .got.plt -j .u_boot_list -j .rel.dyn -O binary u-boot u-boot-nodtb.bin
+      ```
+      - u-boot.nodtb.bin: u-boot without dtb;
+      - 使用 `objcopy` 将 ELF 格式的 u-boot 文件转换为二进制的 u-boot-nodtb.bin 文件；
+
+   3. `.u-boot.bin.cmd`
+      ```
+      cmd_u-boot.bin := cp u-boot-nodtb.bin u-boot.bin
+      ```
+   4. `.u-boot.imx.cmd`
+      ```bash
+      cmd_u-boot.imx := ./tools/mkimage -n
+      board/freescale/mx6ull_alientek_emmc/imximage.cfg.cfgtmp -T imximage -e 0x87800000 -d u-boot.bin u-boot.imx
+      ```
+      - 实现在 u-boot.bin 文件的头部添加 IVT、DCD 等信息；
+      - mfgtools 工具烧写的 uboot 即为 u-boot.imx；
+      - IVT、DCD 等数据保存在了文件 `board/freescale/mx6ullevk/imximage-ddr512.cfg.cfgtmp` 中，工具 `mkimage` 就读取文件里面的信息，然后将其添加到 u-boot.bin 头部，从而生成 u-boot.imx 文件；
+   5. `.u-boot.lds.cmd`
+      - 用于生成 u-boot.lds 链接脚本；
+      - uboot 根目录下的链接脚本就是源于 `arch/arm/cpu/u-boot.lds` 文件；
+   6. 其他 `.u-boot.lds.xxx.cmd`：略。
+- System.map：系统映射文件
+- u-boot：编译出来的 ELF 格式的 uboot 镜像文件；
+- u-boot.xxx
+  1. u-boot.bin：编译出来的 uboot 可执行二进制镜像文件；
+     - 需要注意的是：uboot 是个裸机程序，**需要在其前面加上头部（IVT、DCD 等数据）才能在 I.MX6U 上运行**。
+     - [ ] 补充不同的厂家在这部分都有哪些策略、头部的作用是什么，补充在烧写部分。
+  2. u-boot.imx 就是添加头部以后的 `u-boot.bin`，`u-boot.imx` 就是最终要烧写到开发板中的 uboot 镜像文件；
+  3. u-boot.cfg：uboot 的另外一种配置文件；
+  4. u-boot.lds：链接脚本；
+  5. u-boot.map：uboot 映射文件，**通过查看此文件可以直到某个函数被链接到了哪个地址上**；
+  6. u-boot.srec：S-Record 格式的镜像文件；
+  7. u-boot.sym：uboot 符号文件；
+  8. u-boot-nodtb.bin：和 u-boot.bin 一样，u-boot.bin 就是 u-boot-nodtb.bin 的复制文件；
 
 ## 编译和烧写
 ### 编译
