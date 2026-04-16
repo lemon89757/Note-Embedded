@@ -56,6 +56,8 @@
 - test：测试代码
 - tools：工具文件夹
 - config.mk：某 Makefile 会调用此文件
+  - 定义了 ARCH、CPU、BOARD、VENDOR、SOC、CPUDIR 等等一些用于配置的内容（取值依赖于 .config 文件）；
+  - 在 config.mk 中读取的文件有：arch/arm/config.mk、arch/arm/cpu/armv7/config.mk 等等；
 - .mailmap：邮件列表
 - MAINTAINERS：维护者联系方式文件
 - README
@@ -77,6 +79,9 @@
       obj-y += version.o
       ```
       - 通过让 `CONFIG_CMD_BOOTM=y` 使 make 目标 `obj-y` 中添加了 `bootm.o` 这一项，进而编译 `cmd/bootm.c` 文件，将 bootm 相关内容被编译到 uboot 中，可以在 uboot 的使用中调用 bootm 命令（相当于使能了 bootm）；
+  - 通过 `make xxx_defconfig` 对 uboot 进行配置，配置完成以后就会在 uboot 根目录下生成 .config 文件；
+  - 默认情况下 .config 文件和 xxx_defconfig 内容是一样的，因为 .config 就是从 xxx_defconfig 复制过来的；
+  - 如果后续自行调整了 uboot 的一些配置参数，那么这些新的配置参数就添加到了 .config 中，而是 xxx_defconfig。**相当于 xxx_defconfig 只是一些初始设置，而 .config 里面才是实时有效的配置**。
 - .u-boot.xxx.cmd：一系列的命令文件；
    1. `.u-boot.cmd`
       ```bash
@@ -712,5 +717,318 @@ uboot 在启动后可能会输出一些比较有用的信息：
       - `end`：结束地址；
 
 ## Makefile 详解
+
+### Makefile 基础
+- make 是支持递归调用的，即在 Makefile 中使用 make 命令来执行其他的 Makefile 文件，一般都是子目录中的 Makefile 文件。
+   ```Makefile
+   # 在主目录中通过下述方式编译子目录
+   $(MAKE) -C subdir
+   ```
+   - `$(MAKE)`：调用 make 命令；
+   - `-C`：指定目录；
+
+- 变量传递
+  向子 make 传递变量，通过 `export` 来导出要传递给子 make 的变量。如果不希望导出，则使用 `unexport` 来声明：
+  ```Makefile
+  export VARIABLE
+  unexport VARIABLE
+  ```
+  - 注意：`SHELL` 和 `MAKEFLAGS` 这两个变量除非使用 `unexport` 声明，否则的话，在整个 make 的执行过程中，它们的值始终自动地传递给子 make。
+
+- 设置编译结果输出目录
+  ```Makefile
+  make O=out
+  ```
+  - 设置目标文件输出到 out 目录中，以实现源文件和编译产生的文件分开；
+  - 顶层 Makefile 有这部分的说明：`kbuild supports saving output files in a separate directory.`；
+
+- 代码检查
+  - `make C=1`，使能代码检查，检查需要重新编译的文件；
+  - `make C=2`，用于检查所有的源码文件；
+  - 顶层 Makefile 有这部分的说明：`Call a source code checker...`
+
+- 获取主机架构信息
+   ```Makefile
+   HOSTARCH := $(shell uname -m | \
+            sed -e s/i.86/x86/ \
+            -e s/sun4u/sparc64/ \
+            -e s/arm.*/arm/ \
+            -e s/sa110/arm/ \
+            -e s/ppc64/powerpc/ \
+            -e s/ppc/powerpc/ \
+            -e s/macppc/powerpc/ \
+            -e s/sh.*/sh/)
+   HOSTOS := $(shell uname -s | tr '[:upper:]' '[:lower:]' | \
+            sed -e 's/\(cygwin\).*/cygwin/')
+   
+   export HOSTARCH HOSTOS
+   ```
+
+- 目标架构、交叉编译器和配置文件
+   ```Makefile
+   # set default to nothing for native builds
+   ifeq ($(HOSTARCH), $(ARCH))
+   CROSS_COMPILE ?= 
+   endif
+
+   KCONFIG_CONFIG ?= .config
+   export KCONFIG_CONFIG
+   ```
+   - 可以在这里直接将 ARCH 和 CROSS_COMPILE 的内容固定（定义在顶层 Makefile）：
+      ```Makefile
+      ...
+      ARCH ?= arm
+      CROSS_COMPILE ?= arm-linux-gnueabihf-
+      ...
+      ```
+
+- 交叉编译工具变量设置
+   ```Makefile
+   AS    = $(CROSS_COMPILE)as
+   # Always use GNU ld
+   ifneq ($(shell $(CROSS_COMPILE)ld.bfd -v 2> /dev/null),)
+   LD    = $(CROSS_COMPILE)ld.bfd
+   else
+   LD    = $(CROSS_COMPILE)ld
+   ...
+   ```
+
+- 导出其他变量
+   ```Makefile
+   export VERSION ...
+   ...
+   ```
+   - 有些变量没有定义在顶层 Makefile 中；
+   - 在 config.mk 中有定义。`ARCH := $(CONFIG_SYS_ARCH:"%"=%)`，即提取 `CONFIG_SYS_ARCH` 里面的双引号之间的内容，如果 `CONFIG_SYS_ARCH="arm"` 的话，`ARCH=arm`；
+     - .config 中有定义 CONFIG_SYS_ARCH、CONFIG_SYS_CPU、CONFIG_SYS_BOARD、CONFIG_SYS_VENDOR 和 CONFIG_SYS_SOC 这些变量的值；
+
+- `MAKEFLAGS += -rR --include-dir=$(CURDIR)`
+  - 给 `MAKEFLAGS` 追加内容；
+  - `-rR` 表示禁止使用内置的隐含规则和变量定义；
+  - `--include-dir`：指定所搜路径；
+  - `$(CURDIR)`：表示当前目录；
+
+- `origin` 函数和 make 的 `V` 选项
+   用于告诉变量的来源，语法为 `$(origin <variable>)`，示例：
+   ```Makefile
+   ifeq ("$(origin V)", "command line")
+      KBUILD_VERBOSE = $(V)
+   endif
+   ifndef KBUILD_VERBOSE
+      KBUILD_VERBOSE = 0
+   endif
+
+   ifeq ($(KBUILD_VERBOSE), 1)
+      quiet = 
+      Q = 
+   else
+      quiet=quiet_
+      Q=@
+   ```
+   - `V`：verbose，冗长的、繁琐的。控制 make 是否输出编译的详细信息，即 `make V=1`；
+   - 实际上，通过 `V` 控制的是，`quiet` 和 `Q` 的值：
+      ```Makefile
+      $(Q)$(MAKE) $(build)=tools
+      ```
+      - `make` 在执行的时候默认会在终端输出命令，如果在命令前加上 `@` 则不会输出（`@make` 不会在终端输出命令消息）；
+      ```Makefile
+      quiet_cmd_sym ?= SYM    $@
+      cmd_sys ?= $(OBJDUMP) -t $<> $@
+      ```
+      - 有些命令会有两个版本。如 `sym` 命令分为 `quiet_cmd_sym` 和 `cmd_sym` 两个版本，功能一样，区别在于 make 执行时输出的命令不同。前者输出信息少，即短命令；后者输出信息多，即完整命令；
+      - `quiet` 为空的话，整个命令都会输出；为 `quiet_` 的话，仅输出短版本；为 `silent_` 的话，整个命令都不会输出；
+      - 静默输出 `make -s`；
+
+- `filer` 函数
+   ```Makefile
+   $(filter <pattern...>, <text>)
+   ```
+   - 功能：以 `pattern` 模式过滤 `text` 字符串中的内容，仅保留符合 `pattern` 的内容；
+   - 可以有多个模式；
+   - 返回 `text` 中符合 `pattern` 的内容；
+
+- `firstword` 函数
+   ```Makefile
+   $(firstword <text>)
+   ```
+   - 用于取出 `text` 字符串中的第一个单词并返回；
+
+- `patsubst` 函数
+   ```Makefile
+   $(patsubst <pattern>,<replacement>,<text>)
+   ```
+   - 功能：用于在 `text` 中查找符合 `pattern` 的部分，如果匹配的话就用 `replacement` 替换掉。
+   - `pattern` 是可以包含通配符 `%`，如果 `replacement` 中也包含通配符 `%`，那么 `replacement` 中的 `%` 将是 `pattern` 中的 `%` 所代表的字符串；
+   - 函数返回值为替换后的字符串；
+
+- `wildcard` 函数
+
+- Makefile 调试
+   ```Makefile
+   mytest:
+      @echo 'firstword=' $(firstword x$(MAKEFLAGS))
+   ```
+
+### 单独编译
+1. 单独编译模块
+   在 uboot 中允许单独编译某个模块，使用 `make M=dir` 即可，旧语法 `SUBDIRS=dir` 也是支持的。
+   - 顶层 Makefile 有这部分的说明：`Use M=dir to specify directory of external module to build, old syntax make ... SUBDIRS=$PWD is still supported.`
+   - Makefile：
+      ```Makefile
+      PHONY += all
+      ifeq ($(KBUILD_EXTMOD),)
+      _all: all
+      else
+      _all: modules
+      endif
+      ```
+     - `KBUILD_EXTMOD` 被 make 的 M 和 SUBDIR 选项控制，当两者中的一个不为空时，`KBUILD_EXTMOD` 不为空。
+   - Makefile: `U-Boot does not need modules`；
+
+2. 单独编译设备树
+
+
+### kbuild
+- 顶层 Makefile 会调用文件 `scripts/Kbuild.include` 文件：
+   ```Makefile
+   # we neet some generic definitions (do not try to remake the file)
+   scripts/Kbuild.include:;
+   include scripts/Kbuild.include
+   ```
+   - 通过 include 包含 `scripts/Kbuild.include` 中的内容；
+   - `scripts/Kbuild.include` 文件中包含的内容（部分）：
+      ```Makefile
+      ###
+      # Shorthand for $(Q)$(MAKE) -f scripts/Makefile.build obj=
+      # Usage:
+      # $(Q)$(MAKE) $(build)=dir
+      build := -f $(srctree)/scripts/Makefile.build obj
+      ```
+      - `make -f FILE`、`make --file=FILE`、`make --makefile=FILE`：read `FILE` as a makefile.
+      - `build := -f $(srctree)/scripts/Makefile.build obj`，当 `srctree` 为 `.` 时，结合用法 `$(Q)$(MAKE) $(build)=dir`，实现的功能就是：
+        - **读取 `./scripts/Makefile.build` 作为一个 Makefile 文件**；
+        - **`obj` 作为变量传入编译过程（在 `Makefile.build` 中有使用），从而通过`Makefile.build` 包含与 `obj` 相关的 Kbuild/Makefile 文件，前者优先级更高**；
+        - **另外，如果传入一个编译目标，可以从与 `obj` 相关的 Kbuild/Makefile 文件中寻找匹配信息**；
+
+- `Makefile.build`（部分）：
+  ```Makefile
+  # Modified for U-Boot
+  prefix := tpl
+  src := $(patsubst $(prefix)/%,%,$(obj))
+  ifeq ($(obj),$(src))
+  prefix := spl
+  src := $(patsubst $(prefix)/%,%,$(obj))
+  ifeq ($(obj),$(src))
+  prefix := .
+  endif
+  endif
+
+  PHONY := __build
+  __build:
+
+  ...
+
+  # The filename Kbuild has precedence over Makefile
+  kbuild-dir := $(if $(filter /%,$(src)),$(src),$(srctree)/$(src))
+  kbuild-file := $(if $(wildcard $(kbuild-dir)/Kbuild),$(kbuild-dir)/Kbuild,$(kbuild-dir)/Makefile)
+  include $(kbuild-file)
+
+  ...
+  __build: $(if $(KBUILD_BUILTIN),$(builtin-target) $(lib-target) $(extra-y)) \
+	 $(if $(KBUILD_MODULES),$(obj-m) $(modorder-target)) \
+	 $(subdir-ym) $(always)
+	@:
+  ```
+  - `obj` 作为参数在编译过程中传递，在这里是定义 `src` 的依赖（多数情况下两者相等）；
+  - 编译过程中会包含 `kbuild-file` 文件，而该变量表示的文件与 `src` -> `obj` 有关； 
+  - `__build`：`Makefile.build` 文件的默认目标，当 `$(Q)$(MAKE) $(build)=dir` 命令没有指定编译目标时，使用它作为默认。
+    - 从顶层 Makefile 知 `KBUILD_BUILTIN` 和 `KBUILD_MODULES` 分别为 1 和 0，因此，`__build` 依赖 `$(builtin-target) $(lib-target) $(extra-y)) $(subdir-ym) $(always)`。
+    - 可以在 `__build` 处通过打印，获取这些变量的值，只有 `always = scripts/basic/fixdep` 有效。因此默认目标最终是生成 fixdep 这个软件。
+
+### make xxx_defconfig 过程
+1. 前提：`include scripts/Kbuild.include`。
+
+2. `xxx_defconfig` 的匹配目标：
+   ```Makefile
+   config: scripts_basic outputmakefile FORCE
+	   $(Q)$(MAKE) $(build)=scripts/kconfig $@
+
+   # 匹配到下面这项
+   %config: scripts_basic outputmakefile FORCE
+	   $(Q)$(MAKE) $(build)=scripts/kconfig $@
+   ```
+   - `%config` 依赖于 `scripts_basic`、`outputmakefile` 和 `FORCE`；
+   - `$(Q)$(MAKE) $(build)=scripts/kconfig $@` -> `make -f $(srctree)/scripts/Makefile.build obj=scripts/kconfig xxx_defconfig`（`$@` 表示目标）。于是该命令的功能就是读取 `Makefiel.build` 作为一个 Makefile 文件，并包含 `scripts/kconfig/makefile`，同时指定编译目标为 `xxx_defconfig`。编译目标能够在 `scripts/kconfig/makefile` 中找到匹配的项：
+      ```Makefile
+      defconfig: $(obj)/conf
+      ifeq ($(KBUILD_DEFCONFIG),)
+         $< $(silent) --defconfig $(Kconfig)
+      else
+         @$(kecho) "*** Default configuration is based on '$(KBUILD_DEFCONFIG)'"
+         $(Q)$< $(silent) --defconfig=arch/$(SRCARCH)/configs/$(KBUILD_DEFCONFIG) $(Kconfig)
+      endif
+
+      %_defconfig: $(obj)/conf
+         $(Q)$< $(silent) --defconfig=arch/$(SRCARCH)/configs/$@ $(Kconfig)
+
+      # Added for U-Boot (backward compatibility)
+      %_config: %_defconfig
+         @:
+
+      configfiles=$(wildcard $(srctree)/kernel/configs/$@ $(srctree)/arch/$(SRCARCH)/configs/$@)
+
+      %.config: $(obj)/conf
+         $(if $(call configfiles),, $(error No configuration exists for this target on this architecture))
+         $(Q)$(CONFIG_SHELL) $(srctree)/scripts/kconfig/merge_config.sh -m .config $(configfiles)
+         +$(Q)yes "" | $(MAKE) -f $(srctree)/Makefile oldconfig
+      ```
+      - 这里会将 `xxx_defconfig` 中的配置输出到 `.config` 文件中，最终生成 uboot 根目录下的 `.config` 文件。
+
+3. `FORCE`
+   ```Makefile
+   PHONY += FORCE
+   FORCE:
+
+   ```
+   - 目标 `FORCE` 是没有规则和依赖的，所以每次都会重新生成 `FORCE`。**当 `FORCE` 作为其他目标的依赖时，由于 `FORCE` 总是被更新过的，因此依赖所在的规则总是会执行的**。
+
+4. `scripts_basic`
+   ```Makefile
+   # Basic helpers built in scripts/
+   PHONY += scripts_basic
+   scripts_basic:
+      $(Q)$(MAKE) $(build)=scripts/basic
+      $(Q)rm -f .tmp_quiet_recordmcount
+
+   # To avoid any implicit rule to kick in, define an empty command.
+   scripts/basic/%: scripts_basic ;
+   ```
+   - `$(Q)$(MAKE) $(build)=scripts/basic` -> `make -f ./scripts/Makefile.build obj=scripts/basic`，其中 `srctree` 经过分析为 `.`。于是，这个命令的功能就是在读取 `./scripts/Makefile.build` 作为一个 Makefile 文件的前提下，包含 `scripts/basic/Makefile`，编译目标为默认。
+
+5. `outputmakefile`
+   ```Makefile
+   PHONY += outputmakefile
+   # outputmakefile generates a Makefile in the output directory, if using a
+   # separate output directory. This allows convenient use of make in the
+   # output directory.
+   outputmakefile:
+   ifneq ($(KBUILD_SRC),)
+      $(Q)ln -fsn $(srctree) source
+      $(Q)$(CONFIG_SHELL) $(srctree)/scripts/mkmakefile \
+         $(srctree) $(objtree) $(VERSION) $(PATCHLEVEL)
+   endif
+   ```
+   - 只有 `KBUILD_SRC` 不为空时，`outputmakefile` 才有意义。`KBUILD_SRC` 为空，`outputmakefile` 无意义；
+
+6. 总结
+   - 通过如下命令查看编译的详细信息：
+      ```bash
+      make mx6ull_14x14_ddr512_emmc_defconfig V=1
+      ```
+   - 编译过程：
+     - `./scripts/basic`：生成 `scripts/basic/fixdep` 这个软件；
+     - 基于 `./scripts/kconfig/Makefile`，编译 `xxx_defconfig` 这个目标；
+
+### make 流程
 
 ## 启动流程
