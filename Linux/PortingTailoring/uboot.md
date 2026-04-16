@@ -15,13 +15,13 @@
 
 - SOC 厂商提供的 uboot 是针对自家评估板的，使用其他开发板时，需要在此基础上进行修改、移植适配。
 
-- 相关产商的 uboot：
-  - [NXP](https://github.com/nxp-imx/uboot-imx)，下载稳定分支，如 `lf_v2022.04`；
-
 - 不同类型的 uboot：
   - uboot 官方；
   - 半导体 SOC 厂商；
   - 开发厂商；
+
+- 相关产商的 uboot：
+  - [NXP](https://github.com/nxp-imx/uboot-imx)，下载稳定分支，如 `lf_v2022.04`；
 
 ## uboot 目录内容
 编译完成后，uboot 目录下的内容如下：
@@ -627,27 +627,27 @@ uboot 在启动后可能会输出一些比较有用的信息：
       - 通过 nfs 或 tftp 从网络设备中拷贝；
 
     1.  `bootz` 命令
-      ```bash
-      # 命令格式
-      bootz [addr [initrd[:size]] [fdt]]
-      ```
-      - `addr`：Linux 镜像文件在 DRAM 中的位置；
-      - `initrd`：initrd 文件在 DRAM 中的地址，如果不使用 initrd 的话，使用 `-` 代替即可；
-      - `fdt`：设备树文件在 DRAM 中的地址；
-      示例：
-      ```bash
-      # 通过网络启动 Linux
-      tftp 80800000 zImage
-      tftp 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb
-      bootz 80800000 - 83000000
+    ```bash
+    # 命令格式
+    bootz [addr [initrd[:size]] [fdt]]
+    ```
+    - `addr`：Linux 镜像文件在 DRAM 中的位置；
+    - `initrd`：initrd 文件在 DRAM 中的地址，如果不使用 initrd 的话，使用 `-` 代替即可；
+    - `fdt`：设备树文件在 DRAM 中的地址；
+    示例：
+    ```bash
+    # 通过网络启动 Linux
+    tftp 80800000 zImage
+    tftp 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb
+    bootz 80800000 - 83000000
 
-      # 通过 emmc 启动 Linux
-      # 先使用 fatls、fatwrite 命令确保在 emmc 中存在 Linux 镜像文件和设备树文件
-      fatload mmc 1:1 80800000 zImage
-      fatload mmc 1:1 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb
-      bootz 80800000 - 83000000
-      ```
-   2. `bootm` 命令
+    # 通过 emmc 启动 Linux
+    # 先使用 fatls、fatwrite 命令确保在 emmc 中存在 Linux 镜像文件和设备树文件
+    fatload mmc 1:1 80800000 zImage
+    fatload mmc 1:1 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb
+    bootz 80800000 - 83000000
+    ```
+    2.  `bootm` 命令
       和 `bootz` 功能类似，但是 `bootm` 用于启动 uImage 镜像文件。
       ```bash
       # 不使用设备树
@@ -658,28 +658,28 @@ uboot 在启动后可能会输出一些比较有用的信息：
       ```
       - `addr`：uImage 镜像在 DRAM 中的首地址；
       - 其他参数同 `bootz`；
-   3. `boot` 命令
-      `boot` 命令也是用来启动 Linux 系统的，**只是 `boot` 会读取环境变量 `bootcmd` 来启动 Linux 系统**。示例：
-      ```bash
-      # 通过 boot 命令直接从网络启动 Linux
-      setenv bootcmd 'tftp 80800000 zImage; tftp 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb; bootz 80800000 - 83000000'
-      saveenv
-      boot
+    3.  `boot` 命令
+    `boot` 命令也是用来启动 Linux 系统的，**只是 `boot` 会读取环境变量 `bootcmd` 来启动 Linux 系统**。示例：
+    ```bash
+    # 通过 boot 命令直接从网络启动 Linux
+    setenv bootcmd 'tftp 80800000 zImage; tftp 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb; bootz 80800000 - 83000000'
+    saveenv
+    boot
 
-      # 通过 boot 命令直接从 emmc 启动 Linux
-      setenv bootcmd 'fatload mmc 1:1 80800000 zImage; fatload mmc 1:1 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb; bootz 80800000 - 83000000'
-      saveenv
-      boot
-      ```
-      - **uboot 倒计时结束以后就会启动 Linux 系统，其实就是执行的 `bootcmd` 中的启动命令**；
-      - 只要不修改 `bootcmd` 中的内容，以后每次开机 uboot 倒计时结束后都会使用相同的命令来启动 Linux；
-      - 在启动 Linux 内核时可能出现没有找到根文件系统的错误，这是因为没有设置 uboot 的 `bootargs` 环境变量。
-         ```bash
-         "kernel panic - not Syncing: VFS: Unable to mount root fs on unknown-block(0, 0)"
-         ```
+    # 通过 boot 命令直接从 emmc 启动 Linux
+    setenv bootcmd 'fatload mmc 1:1 80800000 zImage; fatload mmc 1:1 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb; bootz 80800000 - 83000000'
+    saveenv
+    boot
+    ```
+    - **uboot 倒计时结束以后就会启动 Linux 系统，其实就是执行的 `bootcmd` 中的启动命令**；
+    - 只要不修改 `bootcmd` 中的内容，以后每次开机 uboot 倒计时结束后都会使用相同的命令来启动 Linux；
+    - 在启动 Linux 内核时可能出现没有找到根文件系统的错误，这是因为没有设置 uboot 的 `bootargs` 环境变量。
+     ```bash
+     "kernel panic - not Syncing: VFS: Unable to mount root fs on unknown-block(0, 0)"
+     ```
 12. 其他命令
-   1. `reset` 命令：复位重启；
-   2. `go` 命令：用于跳到指定的地址处执行应用：
+    1.  `reset` 命令：复位重启；
+    2.  `go` 命令：用于跳到指定的地址处执行应用：
       ```bash
       go addr [arg ...]
       ```
@@ -689,7 +689,7 @@ uboot 在启动后可能会输出一些比较有用的信息：
       tftp 87800000 printf.bin
       go 87800000
       ```
-   3. `run` 命令：**用于运行环境变量中定义的命令**，例如，可以通过 `run bootcmd` 来运行 `bootcmd` 中的启动命令。示例：
+    3.  `run` 命令：**用于运行环境变量中定义的命令**，例如，可以通过 `run bootcmd` 来运行 `bootcmd` 中的启动命令。示例：
       ```bash
       # 在环境变量中保存多种启动方式，后续只需通过 run 即可快速地以不同的方式启动
       setenv mybootemmc 'fatload mmc 1:1 80800000 zImage; fatload mmc 1:1 83000000 imx6ull-14x14-emmc-7-1024x600-c.dtb; bootz 80800000 - 83000000'
@@ -704,7 +704,7 @@ uboot 在启动后可能会输出一些比较有用的信息：
       # 或
       run mybootnet
       ```
-   4. `mtest`：内存读写测试命令。可以用来测试开发板上的 DDR，格式：
+    4.  `mtest`：内存读写测试命令。可以用来测试开发板上的 DDR，格式：
       ```bash
       mtest [start [end [pattern [iterations]]]]
       ```
