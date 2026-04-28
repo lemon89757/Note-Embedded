@@ -1,0 +1,351 @@
+<mxfile host="65bd71144e">
+    <diagram id="8TwNGegXipig2Y3Sv5Ym" name="imx6ull-uboot-memory">
+        <mxGraphModel dx="1162" dy="970" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" background="#FFFFFF" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="2" value="" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="117" width="360" height="810" as="geometry"/>
+                </mxCell>
+                <mxCell id="3" value="*(.__image_copy_start)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="117" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="*(.vectors)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="147" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="5" value="arch/arm/cpu/armv7/start.o(.text*)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="177" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="*(.text*)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="207" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="7" value="*(.rodata*)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="237" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="8" value="*(.data*)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="267" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="9" value="*(.u_boot_list*)" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="297" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="10" value="*(.__image_copy_end)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="327" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="11" value="*(.__rel_dyn_start)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="357" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="12" value="*(.rel*)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="387" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="13" value="*(.__rel_dyn_end)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="417" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="14" value="*(.__end)" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="447" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="15" value=".__image_binary_end" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d80073;fontColor=#ffffff;strokeColor=#A50040;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="477" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="16" value=".mmutable" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="508" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="17" value=".bss_start" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="538" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="18" value=".bss" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="568" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="19" value=".bss_end" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="598" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="20" value=".dynsym" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="628" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="21" value=".dynbss" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="658" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="22" value=".dynstr" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="688" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="23" value=".dynamic" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="718" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="24" value=".plt" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="748" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="25" value=".interp" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="778" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="26" value=".gnu.hash" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="808" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="27" value=".gnu" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="838" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="28" value=".ARM.exidx" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="868" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="29" value=".gnu.linkonece.armexidx" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="184" y="898" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="30" value="" style="shape=curlyBracket;whiteSpace=wrap;html=1;rounded=1;labelPosition=left;verticalLabelPosition=middle;align=right;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="154" y="117" width="20" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="31" value="代码段" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="94" y="162" width="60" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="32" value="" style="shape=curlyBracket;whiteSpace=wrap;html=1;rounded=1;labelPosition=left;verticalLabelPosition=middle;align=right;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="134" y="237" width="20" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="33" value="数据段" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="74" y="252" width="60" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="34" value="" style="shape=curlyBracket;whiteSpace=wrap;html=1;rounded=1;labelPosition=left;verticalLabelPosition=middle;align=right;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="154" y="357" width="20" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="35" value="重定位相关段" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="64" y="387" width="100" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="36" value="" style="shape=curlyBracket;whiteSpace=wrap;html=1;rounded=1;labelPosition=left;verticalLabelPosition=middle;align=right;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="154" y="538" width="20" height="89" as="geometry"/>
+                </mxCell>
+                <mxCell id="37" value="bss 段" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="104" y="568" width="60" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="38" value="image copy" style="shape=crossbar;whiteSpace=wrap;html=1;rounded=1;direction=south;dashed=1;dashPattern=12 12;" parent="1" vertex="1">
+                    <mxGeometry x="34" y="117" width="40" height="390" as="geometry"/>
+                </mxCell>
+                <mxCell id="39" value="中断向量表" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="547" y="147" width="80" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="40" value="cpu start 代码" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="545" y="177" width="100" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="41" value="代码" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="546" y="207" width="50" height="30" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="JqEFrZdH59Pozs0c8JHD" name="rk3568-update-image">
+        <mxGraphModel dx="4210" dy="1539" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-1" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="104" width="368" height="899" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-2" value="package-file" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="104" width="368" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-3" value="tools/linux/Linux_Pack_Firmware/rockdev/package-file" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-2538" y="106" width="307" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-4" value="&lt;b&gt;TPL(ddr bin)&lt;/b&gt;&lt;br&gt;&amp;lt;SDK&amp;gt;/rkbin/bin/rk35/rk3568_ddr_1560MHz_v1.13.bin(闭源)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="134.5" width="368" height="43.5" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-5" value="tools/linux/Linux_Pack_Firmware/rockdev/Image/" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-2510" y="549.5" width="279" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-6" value="CRC、MD5 data" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="974" width="368" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-7" value="&lt;font style=&quot;color: rgb(255, 51, 51);&quot;&gt;parameter.txt&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="221.5" width="368" height="33" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-9" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="254.5" width="368" height="217" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-10" value="&lt;font style=&quot;color: rgb(255, 51, 51);&quot;&gt;misc.img&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="471.5" width="368" height="43" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-11" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="515.5" width="368" height="156" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-12" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="674" width="368" height="133" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-13" value="&lt;b&gt;&lt;font style=&quot;color: rgb(255, 51, 51);&quot;&gt;rootfs.img&lt;/font&gt;&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="807" width="368" height="71" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-14" value="&lt;b&gt;&lt;font style=&quot;color: rgb(255, 51, 51);&quot;&gt;oem.img&lt;/font&gt;&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="878" width="368" height="53" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-15" value="&lt;b&gt;&lt;font style=&quot;color: rgb(255, 51, 51);&quot;&gt;userdata.img&lt;/font&gt;&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="931" width="368" height="43" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-17" value="&lt;b&gt;&lt;font style=&quot;color: rgb(255, 51, 153);&quot;&gt;updata.img&lt;/font&gt;&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="78" width="82" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-19" value="&lt;span style=&quot;text-wrap-mode: wrap;&quot;&gt;&lt;b style=&quot;&quot;&gt;&lt;font style=&quot;color: rgb(255, 51, 51);&quot;&gt;MiniloaderAll.bin&lt;/font&gt;&lt;/b&gt;&lt;/span&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1611" y="126" width="115" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-20" value="（由 rk356x_spl_loader_v1.13.112.bin 重命名得到，&lt;br&gt;由 &amp;lt;U-Boot&amp;gt;/tools/boot_merger 制作，&lt;br&gt;需要提供 .ini 文件，位于 &amp;lt;SDK&amp;gt;/rkbin/RKBOOT/ 目录下,&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;&lt;font color=&quot;#000000&quot;&gt;默认使用 RK3568MINIALL.ini&lt;/font&gt;&lt;/span&gt;&lt;span style=&quot;color: rgb(63, 63, 63); background-color: transparent;&quot;&gt;）&lt;/span&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1805" y="146" width="319" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-21" value="&lt;b&gt;SPL(miniloader)&lt;/b&gt;&lt;br&gt;&amp;lt;SDK&amp;gt;/rkbin/bin/rk356x_spl_v1.12.bin(闭源)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="178" width="368" height="43.5" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-24" value="由 device/rockchip/rk356x/parameter-buildroot-fit.txt 拷贝得到" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1844" y="225" width="344" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-25" value="&lt;span style=&quot;color: rgb(0, 0, 0); text-wrap-mode: nowrap;&quot;&gt;uboot 编译生成&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+                    <mxGeometry x="-1102" y="44" width="124" height="24" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-27" value="&lt;span style=&quot;text-wrap-mode: wrap;&quot;&gt;&lt;b style=&quot;&quot;&gt;&lt;font style=&quot;color: rgb(255, 51, 51);&quot;&gt;uboot.img&lt;/font&gt;&lt;/b&gt;&lt;/span&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1572" y="254.5" width="76" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-28" value="FIT, flattened image tree 格式文件&lt;div&gt;通过 its, image source file 文件描述 image 信息&lt;br&gt;通过 mkimage 工具生成 itb, flattened image tree blob 镜像&lt;/div&gt;&lt;div&gt;uboot.img 镜像通常含有多份 itb 镜像，一般是 2 份&lt;/div&gt;&lt;div&gt;its 和 itb 文件都在 &amp;lt;U-Boot&amp;gt;/fit 目录下&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1831" y="275" width="327" height="84" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-29" value="u-boot-nodtb.bin" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="254.5" width="368" height="31" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-30" value="bl31_0x00040000.bin" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="285.5" width="368" height="31" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-31" value="bl31_0xfdcc1000.bin" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="316.5" width="368" height="31" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-32" value="bl31_0x00006a00.bin" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="347.5" width="368" height="31" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-33" value="bl31_0xfdcd0000.bin" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="378.5" width="368" height="31" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-35" value="ARM Trusted Firmware,ATF" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1104" y="334" width="166" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-36" value="" style="shape=curlyBracket;whiteSpace=wrap;html=1;rounded=1;flipH=1;labelPosition=right;verticalLabelPosition=middle;align=left;verticalAlign=middle;" vertex="1" parent="1">
+                    <mxGeometry x="-1126" y="285.5" width="20" height="123" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-37" value="tee.bin" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="409.5" width="368" height="31" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-38" value="OP-TEE" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1104" y="412" width="63" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-39" value="u-boot.dtb" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="440.5" width="368" height="31" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-40" value="源自 &amp;lt;SDK&amp;gt;/rkbin/bin/rk35/rk3568_bl31_v1.33.elf&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;uboot 编译时拷贝到 &amp;lt;U-Boot&amp;gt;/bl31.efl&lt;br&gt;&lt;/font&gt;&lt;div&gt;闭源&lt;/div&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1106" y="352" width="281" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-41" value="源自 &amp;lt;SDK&amp;gt;/rkbin/bin/rk35/rk3568_bl32_v2.08.bin&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;uboot 编译时拷贝到 &amp;lt;U-Boot&amp;gt;/tee.bin&lt;br&gt;&lt;/font&gt;&lt;div&gt;闭源&lt;/div&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1105" y="427.5" width="284" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-42" value="&lt;font style=&quot;color: rgb(255, 51, 51);&quot;&gt;镜像启动顺序：Maskrom -&amp;gt; TPL(ddr bin) -&amp;gt; SPL(miniloader) -&amp;gt; Trust(ATF + OP-TEE) -&amp;gt; u-boot -&amp;gt; kernel -&amp;gt; rootfs&lt;/font&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1611" y="1039" width="621" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-43" value="BL1" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1510" y="1060" width="39" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-44" value="" style="shape=crossbar;whiteSpace=wrap;html=1;rounded=1;dashed=1;dashPattern=12 12;" vertex="1" parent="1">
+                    <mxGeometry x="-1440" y="1063" width="125" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-45" value="BL2" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1397" y="1060" width="39" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-46" value="BL31" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1244" y="1060" width="46" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-47" value="BL32" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1188" y="1060" width="46" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-48" value="BL33" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1137" y="1060" width="46" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-49" value="包含 BCB, Bootloader Control Block&lt;div&gt;主要用于 Android/Linux 系统、U-Boot 以及 recovery 之间的通信&lt;br&gt;U-Boot 阶段会读取 misc 分区中的 BCB 数据，从而判读是进入正常系统，还是 recovery 模式&lt;/div&gt;&lt;div&gt;misc.img 镜像都是预编译好的，位于 /device/rockchip/rockimg/ 目录下&lt;/div&gt;&lt;div&gt;当前使用的 misc.img 镜像由板级配置文件 device/rockchip/rk356x/BoardConfig-rk3568-atk-evb1-ddr4-v10.mk 的 RK_MISC 变量决定&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-2220" y="430" width="720" height="84" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-50" value="&lt;span style=&quot;text-wrap-mode: wrap;&quot;&gt;&lt;b style=&quot;&quot;&gt;&lt;font style=&quot;color: rgb(255, 51, 51);&quot;&gt;boot.img&lt;/font&gt;&lt;/b&gt;&lt;/span&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1569" y="515" width="69" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-54" value="FIT 格式文件&lt;div&gt;make.sh 编译内核后生成的 boot.img 是 Android bootimg&lt;/div&gt;&lt;div&gt;还需要通过命令生成 FIT 格式的 boot.img&lt;/div&gt;&lt;div&gt;device/rockchip/common/mk-fitimage.sh kernel/boot.img device/rockchip/rk356x/boot.its&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1984" y="539" width="484" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-56" value="&lt;span style=&quot;text-wrap-mode: nowrap;&quot;&gt;拷贝、重命名&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+                    <mxGeometry x="-1102" y="72" width="124" height="24" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-57" value="rk3568-atk-evb1-ddr4-v10-linux.dtb" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="515.5" width="368" height="31" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-58" value="Image(内核镜像)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="547" width="368" height="31" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-59" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="579" width="368" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-60" value="resource.img" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1095" y="613" width="87" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-61" value="并未使用这份 dtb，使用的是 resource.img 中的 dtb" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1102" y="520.5" width="290" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-62" value="内核 dtb" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="578" width="368" height="31" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-63" value="uboot 和 内核 logo 图片" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="609" width="368" height="31" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-64" value="......" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="640" width="368" height="33" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-65" value="" style="shape=curlyBracket;whiteSpace=wrap;html=1;rounded=1;flipH=1;labelPosition=right;verticalLabelPosition=middle;align=left;verticalAlign=middle;" vertex="1" parent="1">
+                    <mxGeometry x="-1122" y="580.75" width="20" height="90.5" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-69" value="&amp;lt;kernel&amp;gt;/scripts/resource_tool logo.bmp logo_kernel.bmp rk3568-atk-evb1-ddr4-v10-linux.dtb" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1099" y="638.25" width="514" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-71" value="&lt;b&gt;&lt;font style=&quot;color: rgb(255, 51, 51);&quot;&gt;recovery.img&lt;/font&gt;&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1588" y="673" width="92" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-72" value="&lt;span style=&quot;text-wrap-mode: nowrap;&quot;&gt;内核编译&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+                    <mxGeometry x="-1102" y="102" width="124" height="24" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-73" value="rk3568-atk-evb1-ddr4-v10-linux.dtb" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="674" width="368" height="33" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-74" value="Image(内核镜像)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="707" width="368" height="33" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-75" value="ramdisk(recovery 根文件系统，rootfs.cpio.gz)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="740" width="368" height="33" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-76" value="resource.img" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+                    <mxGeometry x="-1496" y="773" width="368" height="33" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-78" value="../device/rockchip/common/mk-fitimage.sh buildroot/output/rockchip_rk356x_recovery/images/recovery.img&amp;nbsp;&lt;div&gt;device/rockchip/rk356x/boot4recovery.its &amp;lt;SDK&amp;gt;/buildroot/output/rockchip_rk356x_recovery/images/rootfs.cpio.gz&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-2118" y="693" width="622" height="41" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-79" value="&lt;span style=&quot;text-wrap-mode: nowrap;&quot;&gt;recovery 编译&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+                    <mxGeometry x="-1102" y="130" width="124" height="24" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-80" value="编译得到 rootfs.ext4 -&amp;gt; rootfs.ext2&lt;div&gt;重命名得到 rootfs.img&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1699" y="807" width="199" height="41" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-81" value="&lt;span style=&quot;text-wrap-mode: nowrap;&quot;&gt;rootfs 编译&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+                    <mxGeometry x="-1102" y="161" width="124" height="24" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-82" value="厂家 APP 或数据，挂载到 /oem 目录下" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1900" y="883" width="226" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-83" value="用户 APP 或数据，挂载到 /userdata 目录下" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1926.5" y="936" width="249" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-84" value="ext2 文件系统格式镜像&lt;div&gt;执行 ./build.sh firmware 或 ./mkfirmware.sh 在 rockdev/ 目录下生成&lt;/div&gt;&lt;div&gt;通过 mkfirmware.sh 脚本制作&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-1126" y="905" width="373" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-86" value="由 device/rockchip/oem/oem_xxx（由板级配置文件中的 RK_OEM_DIR 决定）目录创建而成" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-2060" y="909" width="507" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-87" value="由 device/rockchip/userdata/userdata_xxx（由板级配置文件中的 RK_USERDATA_DIR 决定）目录创建而成" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="-2094" y="956" width="590" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="zPBDHpfH6a97GSw9BV1H-88" value="" style="shape=curlyBracket;whiteSpace=wrap;html=1;rounded=1;labelPosition=left;verticalLabelPosition=middle;align=right;verticalAlign=middle;" vertex="1" parent="1">
+                    <mxGeometry x="-2226" y="146" width="20" height="834" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
