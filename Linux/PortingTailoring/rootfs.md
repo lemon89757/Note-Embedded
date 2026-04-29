@@ -361,3 +361,180 @@ BusyBox 是一个集成了大量 linux 命令和工具的软件。
 将测试好的根文件系统进行打包保存。
 
 ## Buildroot 构建 rootfs
+SDK 的类型有很多，在 Linux 中常见的 SDK 类型有 Buildroot，Yocto 或者厂家提供的一个项目开发工具包。有些 SDK 是二次或多次开发，如 Rockchip 提供的 Buildroot 版本添加了对某款芯片的软件支持（例如在 Buildroot 中添加 kernel，uboot 等 Linux 软件）。为了方便构建他们的 SDK，厂家会编写一些方便构建 SDK 的脚本，这个时候就与传统（Buildroot 原版）的构建指令有点不一样了，我们应当按照 SDK 构建手册操作，尽管我们还能使用 Buildroot 里面支持的指令。
+
+busybox 构建的根文件系统不齐全，很多内容需要自行添加，如 lib 库文件等。在驱动开发中，很多第三方软件也需要自行移植，而它们有很多又依赖其他的库文件，导致移植过程非常的繁琐。
+
+Buildroot 不仅集成了 busybox，而且还集成了各种常见的第三方库和软件，需要什么就选择什么。Buildroot 极大的方便了嵌入式 Linux 开发人员构建实用的根文件系统。
+
+Buildroot 和 uboot、Linux kernel 一样也支持图形化配置。
+
+Buildroot 不仅仅能构建根文件系统，也可以编译 Linux 内核和 uboot。当配置 Buildroot，使能 linux 内核和 uboot 以后 buildroot 就会自动下载最新的 linux 内核和 uboot 源码并编译。一般不会使用 Buildroot 下载的 Linux 内核和 uboot，因为 Buildroot 下载的官方源码，里面会缺少很多驱动问年间，而且最新的内核和 uboot 会对编译器版本号有要求，可能导致编译失败。
+
+### 源码获取
+1. 厂家提供
+    根据构建手册操作。
+2. 从 Buildroot 官网下载
+   [Buildroot 官方下载](https://buildroot.org/download.html)
+
+### 环境搭建
+1. 配置文件选择
+   - 列出 `./configs/` 目录下的配置文件：
+        ```bash
+        make list-defconfigs
+        ```
+        - 需要注意的是，在这种官方支持的配置文件是针对某个内核版本的，得根据所使用的内核版本对配置文件进行修改，否则文件系统会启动不成功；
+        - 使用开发板厂家提供的配置文件；
+
+2. 依赖软件安装
+    ```bash
+    sudo apt-get install gcc g++
+    sudo apt-get install lsb-core lib32stdc++6 libncurses-dev
+    ```
+
+### 构建根文件系统
+1. 配置
+    ```bash
+    # 打开图形化配置
+    make menuconfig
+    
+    # 配置 Target options
+    Target options
+        -> Target Architecture          = ARM(little endian)
+        -> Target Binary Format         = ELF
+        -> Target Architecture Variant  = cortex-A7
+        -> Target ABI                   = EABIhf
+        -> Floating point strategy      = NEON/VFPv4
+        -> ARM instruction set          = ARM
+    
+    # 配置 Toolchain (交叉编译工具链)
+    # Buildroot 可以自动从国外服务器下载交叉编译器，考虑到网络环境，建议设置成本地交叉编译器
+    Toolchain
+        -> Toolchain type               = External toolchain
+        -> Toolchain                    = Custom toolchain  // 使用本地的交叉编译器
+        -> Toolchain origin             = Pre-install toolchain // 预装的编译器
+        -> Toolchain path               = /usr/local/arm/gcc-linaro-xxx_arm-linux-gnueabihf
+        -> Toolchain prefix             = $(ARCH)-linux-gnueabihf // 设置交叉编译器前缀
+        -> External toolchain gcc version               = 4.9.x
+        -> External toolchain kernel headers series     = 4.1.x
+        -> External toolchain C library                 = glibc/eglibc
+        -> [*] Toolchain has SSP support?(NEW)  // 选中
+        -> [*] Toolchain has RPC support?(NEW)
+        -> [*] Toolchain has C++ support?
+        -> [*] Enable MMU support(NEW)
+    
+    # 配置 System configuration
+    # 用于设置一些系统配置，如开发板名字、欢迎语、用户名、密码等
+    System configuration
+        -> System hostname              = alpha_imx6ull
+        -> System banner                = Welcome to alpha i.mx6ull
+        -> Init system                  = BusyBox   // 使用 busybox
+        -> /dev management              = Dynamic using devtmpfs + mdev     // 使用 mdev
+        -> [*] Enable root login with password(NEW) // 使能登录密码
+            -> Root password            = 123456
+    
+    # 配置 Filesystem images
+    # 配置最终制作的根文件系统的格式
+    -> Filesystem images
+        -> [*] ext2/3/4 root filesystem     // 如果是 EMMC 或 SD 卡的话就用 ext3/4
+            -> ext2/3/4 variant         = ext4  //  选择 ext4 格式
+        -> [*] ubi image containing an ubifs root filesystem    // 如果使用 NAND 的话就用 ubifs
+
+    # 禁止编译 Linux 内核和 uboot
+    -> Kernel
+        -> [] Linux Kernel      // 不要选择编译 Linux kernel 选项
+
+    -> Bootloaders
+        -> [] U-Boot            // 不要选择编译 U-Boot 选项
+    
+    # 配置 Target packages
+    # 用于配置要选择的第三方库或软件
+    # 可以先什么都不选，先编译最基础的根文件系统，之后再重新配置并编译
+    ```
+
+2. 编译
+    ```bash
+    sudo make   # 一定要加 sudo！而且不能通过 -jx 来指定多核编译！
+    ```
+    - Buildroot 编译的时候会先从网上下载所需的软件源码（终端会给出下载网址），可以先提前准备好相关离线包并将其放置在 `dl` 或者 `dl/package-name` 目录下；
+    - 编译完成后得到根文件系统的压缩包（位于 `buildroot-xxx/output/images`），包含 ext2、ext4、ubi 等格式，.tar 就是打包好的根文件系统，使用 .tar 进行测试（测试时解压）；
+
+3. 测试
+   - 通过 nfs 挂载，设置 bootargs 环境变量；
+   - 根据提示 "can't change directory to '/lib/modules': No such file or directory" 创建此目录；
+
+4. 第三方软件和库的配置
+    ```bash
+    # 使能 alsa-lib
+    Target packages
+        -> Libraries
+            -> Audio/Sound
+                -> alsa-lib      // 此配置项下的文件全部选中
+
+    # 使能 alsa-utils
+    Target packages
+        -> Audio and video applications
+            -> alsa-utils       // 此目录下的软件全部选中
+    ```
+
+5. Buildroot 下的 busybox 配置
+   - Buildroot 在构建根文件系统的时候需要用到 busybox。Buildroot 会自动下载 busybox 压缩包并保存到 `dl` 目录下。在 `dl` 目录下就有 “busybox” 文件夹，此目录下保存着 busybox 压缩包；
+   - Buildroot 将所有解压缩的软件都保存在 `output/build` 中，可以找到 `output/build/busybox-xxx` 文件夹，其中是解压后的 busybox 源码；
+   - 在上述目录中修改 busybox 源码或者进行配置：
+        ```bash
+        # 在 output/build/busybox-xxx 目录下
+        make menuconfig
+        ```
+   - 编译：配置好以后重新编译 Buildroot 下的 busybox
+        ```bash
+        # 在 Buildroot 项目顶层目录下
+        sudo make show-targets      # 查看当前 Buildroot 配置了哪些目标软件包
+        # 单独编译 busybox
+        sudo make busybox
+        # 编译完成后重新编译 Buildroot，主要是对其进行打包
+        sudo make # 如果 .tar 不是最新创建的话先删掉它，然后在重新 sudo make
+        ```
+
+6. 命令行显示用户名、当前目录等信息
+   - `PS1` 环境变量用于设置命令提示符格式，格式为：
+        ```bash
+        PS1 = '命令列表'
+        ```
+        命令列表可选参数：
+        - `\!`：显示该命令的历史记录编号；
+        - `\#`：显示当前命令的命令编号；
+        - `\$`：显示 $ 符作为提示符，如果用户是 root 的话，则显示 #；
+        - `\\`：显示反斜杠；
+        - `\d`：显示当前日期；
+        - `\h`：显示主机名；
+        - `\n`：打印新行；
+        - `\nnn`：显示 nnn 的八进制值；
+        - `\s`：显示当前运行的 shell 的名字；
+        - `\t`：显示当前时间；
+        - `\u`：显示当前用户的用户名；
+        - `\W`：显示当前工作目录的名字；
+        - `\w`：显示当前工作目录的路径；
+   - 编辑 `/etc/profile` 文件：
+        ```shell
+        # 屏蔽下述内容
+        if [ "$PS1" ]; then
+            if [ "`id -u`" -eq 0]; then
+                export PS1='# '
+            else
+                export PS1='$ '
+            fi
+        fi
+
+        # 重新设置 PS1 的值
+        PS1='[\u@\h]:\w$:'      # 格式为 [user@hostname]:currentpath$:
+        export PS1
+        ```
+
+### 常见问题及解决方法
+
+## Ubuntu-base 根文件系统构建
+
+## 参考
+1. 正点原子-《I.MX6U 嵌入式 Linux 驱动开发指南》
+2. 正点原子-《Buildroot 快速使用手册》
+3. 正点原子-《Buildroot 用户手册（中文版）》
