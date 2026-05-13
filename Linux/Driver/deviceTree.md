@@ -1,21 +1,27 @@
 # Note for DeviceTree
 ## 硬件描述方式
-   - 在没有设备树的时候（内核版本 3.x ），Linux 内核源码中大量的 `arch/arm/mach-xxx` 和 `arch/arm/plat-xxx` 文件夹，这些文件夹里面的文件就是对应平台下的板级信息；（它们被硬编码到 `Linux` 内核中，导致内核臃肿）
-   - `ARM` 社区引入了 `PowerPC` 等架构已经采用的设备树（`Flattened Device Tree`），将这些描述板级硬件信息的内容从 `Linux` 中分离开来，用一个专属的文件格式来描述。这个专属的文件就叫设备树，文件扩展名为 `.dts`；
+- 在没有设备树的时候（内核版本 3.x ），Linux 内核源码中大量的 `arch/arm/mach-xxx` 和 `arch/arm/plat-xxx` 文件夹，这些文件夹里面的文件就是对应平台下的板级信息；（它们被硬编码到 `Linux` 内核中，导致内核臃肿）
+- `ARM` 社区引入了 `PowerPC` 等架构已经采用的设备树（`Flattened Device Tree`），将这些描述板级硬件信息的内容从 `Linux` 中分离开来，用一个专属的文件格式来描述。这个专属的文件就叫设备树，文件扩展名为 `.dts`；
 
 ## 设备树相关的文件扩展名
-   - `.dts`：   设备树文件；
-   - `.dtsi`：  类似于 C 语言中的头文件。一个 SOC 可以作出很多不同的板子，这些不同的板子肯定是有共同的信息，将这些共同的信息提取出来作为一个通用的文件，其他的 `.dts` 文件可以直接引用这个通用文件（`.dtsi`）；
-   一般 `.dts` 描述板级信息（例如开发板上的 IIC 设备、SPI 设备等），`.dtsi` 描述 SOC 级信息（例如 SOC 有几个 CPU、主频是多少、各个外设控制器信息等）；
-   此外，`.dts` 文件也可以直接引用 `.dts` 文件以及 C 语言的 `.h` 头文件（可以定义一些宏），例如：
-   ```dts
-   #include <dt-bindings/input/input.h>
-   #include "imx6ull.dtsi"
-   ...
-   #include "imx6ull-14x14-evk.dts"
-   ```
-   - `.dtb`：`.dts` 文件编译以后得到的二进制文件的扩展名；
-   将 `.dts` 编译为 `.dtb` 需要用到 `dtc` 工具，它的源码在 Linux 内核的 `scripts/dtc` 目录下，在 `scripts/dtc/Makefile` 中有如下信息说明了 `dtc` 工具的依赖：
+- `.dts`：
+  - 设备树文件；
+- `.dtsi`：
+  - 类似于 C 语言中的头文件。一个 SoC 可以作出很多不同的板子，这些不同的板子肯定是有共同的信息，将这些共同的信息提取出来作为一个通用的文件，其他的 `.dts` 文件可以直接引用这个通用文件（`.dtsi`）；
+   
+一般 `.dts` 描述板级信息（例如开发板上的 IIC 设备、SPI 设备等），`.dtsi` 描述 SoC 级信息（例如 SoC 有几个 CPU、主频是多少、各个外设控制器信息等）。
+   
+此外，`.dts` 文件也可以直接引用 `.dts` 文件以及 C 语言的 `.h` 头文件（可以定义一些宏），例如：
+```dts
+#include <dt-bindings/input/input.h>
+#include "imx6ull.dtsi"
+...
+#include "imx6ull-14x14-evk.dts"
+```
+
+- `.dtb`：
+  - `.dts` 文件编译以后得到的二进制文件的扩展名；
+  - 将 `.dts` 编译为 `.dtb` 需要用到 **`dtc`** 工具，它的源码在 Linux 内核的 `scripts/dtc` 目录下，在 `scripts/dtc/Makefile` 中有如下信息说明了 `dtc` 工具的依赖：
     ```Makefile
     hostprogs-y := dtc
     always := $(hostprogs-y)
@@ -52,13 +58,13 @@
     imx6ul-14x14-ddr3-arm2.dtb \
     imx6ul-14x14-drr3-arm2-emmc.dtb
    ```
-   由上述 Makefile 代码可知，当 `#define CONFIG_SOC_IMX6UL y` 后，即可编译其依赖的设备树文件。
+   由上述 Makefile 代码可知，当 `CONFIG_SOC_IMX6UL=y` 后，即可编译其依赖的设备树文件。
 
 ## 设备树语法
 参考资料：
-    1. 《Devicetree Specification.pdf》
-    2. 《Power_ePAPR_APPROVED_vxx.pdf》
-    3. 内核文档 Documentation/bind，其中会有详细的规定以及各个厂商对于自己设备树的具体说明；
+1. 《Devicetree Specification.pdf》
+2. 《Power_ePAPR_APPROVED_vxx.pdf》
+3. 内核文档 `/Documentation/devicetree/bindings`，其中会有详细的规定以及各个厂商对于自己设备树的具体说明；
 
 `.dts` 文件布局：
 ```dts
@@ -101,30 +107,35 @@
    `value` 还可以是各种指的组合，用逗号隔开：`compatible = "ns16550", "ns8250"`、`example = <0xf00f0000 19>, "a strange property format"`。
 4. 标准属性
    不同的设备需要的属性不同，用户可以自定义属性。除了用户自定义属性，有很多属性是标准属性。
-   - `compatible`：用于匹配内核中的驱动程序，建议取成的形式：`manufacturer, model`，即“厂商 + 模块名”。由根节点的 `compatible` 属性可知所使用的设备（"硬件设备名字", "设备所使用的 SOC"："fsl,imx6ull-14x14-evk", "fsl,imx6ull"），**内核会通过根节点的 `compatible` 属性查看是否支持此设备，如果支持的化就会启动内核**；
+   - `compatible`：用于匹配内核中的驱动程序，建议取成的形式：`manufacturer, model`，即“厂商 + 模块名”。
+     - 由根节点的 `compatible` 属性可知所使用的设备（"硬件设备名字", "设备所使用的 SoC"："fsl,imx6ull-14x14-evk", "fsl,imx6ull"），**内核会通过根节点的 `compatible` 属性查看是否支持此设备，如果支持的化就会启动内核**；
    - `mode`：描述设备模块信息，例如名字；
-   - `status`："okay"（设备可操作）、"disable"（设备当前不可操作，但未来可变为可操作的）、"fail"（设备不可操作，设备检测到了一系列错误）、"fail-sss"（同 "fail"，"sss" 部分是检测到的错误内容）；
+   - `status`：
+     - "okay"：设备可操作；
+     - "disable"：设备当前不可操作，但未来可变为可操作的；
+     - "fail"：设备不可操作，设备检测到了一系列错误；
+     - "fail-sss"：同 "fail"，"sss" 部分是检测到的错误内容。
    - `#address-cells` 和 `#size-cells`：前者决定了**子节点** `reg` 属性中地址信息所占用的**字长**（32 位）；后者决定了子节点 `reg` 属性中长度信息所占的**字长**（32 位）；`cell` 指一个 32 位的数值；
    - `reg`：`reg` 属性的值一般是一系列的 `(address, length)` 对，用于描述设备地址空间资源信息（从哪里开始，长度是多少），一般都是某个外设寄存器地址范围信息；父节点的 `#address` 和 `#size` 说明了需要用多少个 32 位数来表示 `(address, length)` 信息；
    - `ranges`：`ranges` 属性值可以为空或者按照 `(child-bus-address, parent-bus-address, length)` 格式编写的数字矩阵，表示一个地址映射/转换表，由子地址、父地址和地址空间长度组成，例如：
-    ```dts
-    soc {
-        compatible = "simple-bus";
-        #address-cells = <1>;
-        #size-cells = <1>;
-        ranges = <0x0 0xe0000000 0x00100000>;
+      ```dts
+      soc {
+          compatible = "simple-bus";
+          #address-cells = <1>;
+          #size-cells = <1>;
+          ranges = <0x0 0xe0000000 0x00100000>;
 
-        serial {
-            device_type = "serial";
-            compatible = "ns16550";
-            reg = <0x4600 0x100>;
-            clock-frequency = <0>;
-            interrupts = <0xA 0x8>;
-            interrupt-parent = <&ipic>;
-        };
-    }
-    ```
-    上述设备树指定了一个 1024KB(0x00100000) 的地址范围，子地址空间的物理起始地址为 0x0，父地址空间的物理起始地址为 0xe0000000。子节点 `serial` 定义了设备寄存器的起始地址为 0x4600，寄存器长度为 0x100，经过地址转换，`serial` 设备可以从 0xe0004600 开始进行读写操作；
+          serial {
+              device_type = "serial";
+              compatible = "ns16550";
+              reg = <0x4600 0x100>;
+              clock-frequency = <0>;
+              interrupts = <0xA 0x8>;
+              interrupt-parent = <&ipic>;
+          };
+      }
+      ```
+      上述设备树指定了一个 1024KB(0x00100000) 的地址范围，子地址空间的物理起始地址为 0x0，父地址空间的物理起始地址为 0xe0000000。子节点 `serial` 定义了设备寄存器的起始地址为 0x4600，寄存器长度为 0x100，经过地址转换，`serial` 设备可以从 0xe0004600 开始进行读写操作；
     - `name`：用于记录节点名字，已被弃用；
     - `device_type`：已被弃用；
 5. 特殊节点
@@ -135,6 +146,7 @@
             stdout-path = &uart1;
         };
         ```
+        - 在 `proc/device-tree/chosen` 目录下不仅包含 `stdout-path` 文件（chosen 节点下的属性）；
         - 进入到 `proc/device-tree/chosen` 目录中，会发现存在 `bootargs` 这个属性，通过 `cat` 命令查看内容可得到 `uboot` 启动内核时 `bootargs` 的环境变量；
         - `uboot` 在 `chosen` 节点中添加了 `bootargs` 属性，参考 `common/fdt_support.c` 中的 `fdt_chosen` 函数；
         - `bootz` 命令 -> `do_bootz()` -> `do_bootm_states()` -> `boot_selected_os()` -> `do_bootm_linux()` (`boot_fn() -> boot_prep_linux() -> image_setup_linux() -> fdt_chosen()`)；
@@ -153,7 +165,7 @@
    - `uboot` 会向内核传递一个叫做 `machine id` 的值，即设备 ID，告诉内核当前的设备信息，内核据此判断是否支持此设备；
    - 针对每个设备，Linux 内核都用 `MACHINE_START` 和 `MACHINE_END` 来定一个 `machine_desc` 结构体变量来描述这个设备（eg:`arch/arm/mach-imx/mach-mx35_3ds.c`）；
    - 这个 `machine_desc` 变量存储在 `.arch.info.init` 段中，变量中存储了此设备的 `machine id`；
-   - `include/generated/mach-types.h` 中定义了大量的 `machine id`，`uboot` 传进来的 `machine id` 会于此文件中定义的相关宏进行对比，看有没有相等的，如果相等的话就表示内核支持该设备；
+   - `include/generated/mach-types.h` 中定义了大量的 `machine id`，`uboot` 传进来的 `machine id` 会与此文件中定义的相关宏进行对比，看有没有相等的，如果相等的话就表示内核支持该设备；
 2. 使用设备树后
    - 不再使用 `MACHINE_START`，而是 `DT_MACHINE_START`（定义在 `arch/arm/include/asm/mach/arch.h`，它也对应到一个 `machine_desc` 结构体），不再根据 `machine id` 来检查内核是否支持该设备；
    - `machine_desc` 中有一个成员变量 `.dt_compat`，表示设备兼容性，它会与设备树中根节点的 `compatible` 属性进行对比，若有任何一个值相等，则表示内核支持该设备；
@@ -172,7 +184,7 @@ Linux 内核启动的时候会解析设备树中各个节点的信息，并且�
   # 输出内容：devicetree、fdt
   ```
 
-  - 在 `/sys/firmware/devicetree` 目录下，根节点对应 `base` 目录，每一个节点对应一个目录，每一个属性对应一个文件；
+  - 在 `/sys/firmware/devicetree` 目录下，根节点对应 `base` 目录，它的每个子节点对应 `base` 下的一个子目录，它的每一个属性对应 `base` 目录下的一个文件；
   - 属性查看：
     - 字符串：`cat` 命令；
     - 数值：`hexdump` 命令；
@@ -240,7 +252,7 @@ Linux 内核启动的时候会解析设备树中各个节点的信息，并且�
     struct resource *parent, *sibling, *child;
   };
   ```
-  对于 32 位的 SOC 来说，`resource_size_t` 是 u32 类型的。其中，`flags` 表示资源类型，可选的资源标志定义在 `include/linux/ioport.h` 中：
+  对于 32 位的 SoC 来说，`resource_size_t` 是 u32 类型的。其中，`flags` 表示资源类型，可选的资源标志定义在 `include/linux/ioport.h` 中：
   ```c
   #define IORESOURCE_BITS ...
   #define IORESOURCE_TYPE_BITS ...
@@ -374,4 +386,4 @@ Linux 内核提供了一系列的函数来获取设备树中的节点或属性�
 
 ## 向设备树中添加节点信息
 - 参考：
-  - Linux 源码目录：`/Documentation/devicetree/bindings`。例如在 I.MX6ULL 这颗 SOC 的 I2C 下添加一个节点，可以查看 `/Documentation/decicetree/bingdings/i2c/i2c-imx.txt`（由具体芯片厂商提供各自的绑定参考指南，目录下找不到也是需要联系芯片厂商提供）。
+  - Linux 源码目录：`/Documentation/devicetree/bindings`。例如在 I.MX6ULL 这颗 SoC 的 I2C 下添加一个节点，可以查看 `/Documentation/decicetree/bingdings/i2c/i2c-imx.txt`（由具体芯片厂商提供各自的绑定参考指南，目录下找不到也是需要联系芯片厂商提供）。
