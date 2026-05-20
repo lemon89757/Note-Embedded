@@ -549,8 +549,66 @@ APP 根据 `poll` 函数的返回值就可以知道是否有数据，如果有�
    - 超时时间；
    - 函数；
 
-1. API
+1. 概述
+   - FreeRTOS 等实时系统需要一个硬件定时器提供系统时钟，一般使用 Systick 作为系统时钟源。同理，Linux 的运行也需要一个系统时钟（可能是 Cortex-A7 内核中的通用定时器，关于该定时器参考：《Cortex-A7 Technical Reference Manua.pdf-9: Generic Timer》和 《ARM Architecture Reference Manual ARMv7-A and ARMv7-R edition.pdf-B8: The Generic Timer》）。
+   - 硬件定时器提供时钟源，周期性地产生定时中断，中断的频率就是系统频率，也叫节拍率（tick rate），单位是 Hz。
+   - 时钟源的频率是可以设置的：
+     - 在编译 Linux 内核时，可以通过图形化配置界面设置系统节拍率：`Kernel Features -> Timer frequency (<choice> [=y])`，默认为 100Hz；
+     - `/.config` 中存在记录：`CONFIG_HZ=100`、`include/asm-generic/param.h` 中通过 `CONFIG_HZ` 来设置系统时钟：`#define HZ CONFIG_HZ`，`HZ` 表示一秒的节拍数；
+   - 节拍率高低的比较：
+     - 高节拍率可以提高系统时间精度，对时间要求严格的函数来说，能够以更高的精度运行，同时时间测量也更加准确；
+     - 高节拍率会导致中断产生更频繁，加剧了系统处理中断的负担，中断服务函数占用处理器的时间增加；
+     - 补充：现在的处理器性能都很强大，采用 1000Hz 的系统节拍率并不会增加太大的负载压力。
+   - Linux 内核使用全局变量 `jiffies` 来记录系统从启动以来的系统节拍数，系统启动的时候会将 `jiffies` 初始化为 0：
+      ```c
+      // include/linux/jiffies.h
+      extern u64 __jiffy_data jiffies_64;                   // 64 位
+      extern unsigned long volatile __jiffy_data jiffies;   // 32 位
+      ```
+      - `jiffies_64` 和 `jiffies` 是同一个东西，前者用于 64 位系统，而后者用于 32 位系统；
+      - 为了兼容不同的硬件，`jiffies` 其实就是 `jiffies_64` 的低 32 位：
+         ![](../../img/driverBase/260520-215628.png)
+      - 使用 `get_jiffies_64` 函数可以获取 `jiffies_64` 的值。在 32 位系统上读取 `jiffies` 的值，在 64 位系统上 `jiffies` 和 `jiffies_64` 表示同一个变量，因此也可以直接读取 `jiffies` 的值；
+      - `jiffies/HZ` 就是系统运行时间，单位为秒；
+      - Linux 内核使用如下几个函数来处理绕回问题（`jiffies` 数据溢出）：
+         ```c
+         time_after(unkown, known)
+         time_before(unkown, known)
+         time_after_eq(unkown, known)
+         time_before_eq(unkown, known)
+         // unkown 通常为 jiffies，known 通常是需要对比的值
+         // 如果 unkown 超过 known 的话，time_after 函数返回真，否则返回假。其他类推
+         // 超时判断示例：
+         unsigned long timeout;
+         timeout = jiffies + 2 * HZ;
+
+         if (time_before(jiffies, timeout)) {
+            // 超时未发生
+         } else {
+            // 超时发生
+         }
+         ```
+      - Linux 内核提供了几个 `jiffies` 和 ms、us、ns 之间的转换函数：
+         ```c
+         int jiffies_to_msecs(const unsigned long j)
+         int jiffies_to_usecs(const unsigned long j)
+         u64 jiffies_to_nsecs(const unsigned long j)
+         
+         long msecs_to_jiffies(const unsigned int m)
+         long usecs_to_jiffies(const unsigned int u)
+         unsigned long nsecs_to_jiffies(u64 n)
+         ```
+   - Linux 内核定时器采用系统时钟来实现。如果想要实现周期性定时，需要在定时处理函数中重新开启定时器；
+   - Linux 内核提供了毫秒、微妙和纳秒延时函数：
+      ```c
+      void ndelay(unsigned long nsecs)
+      void udelay(unsigned long usecs)
+      void mdelay(unsigned long msecs)
+      ```
+
+2. API
    参考 `include/linux/timer.h`
+   - `struct timer_list` 的定义：略；
    - `setup_timer(time, fn, data)`：
      - 设置定时器，主要是初始化 `timer_list` 结构体，设置其中的函数、参数；
    - `void add_timer(struct timer_list *timer)`：
@@ -560,7 +618,8 @@ APP 根据 `poll` 函数的返回值就可以知道是否有数据，如果有�
      - 修改定时器的超时时间；
      - 它等同于 `del_timer(timer); timer->expires = expires; add_timer(timer);`，但是更高效；
    - `int del_timer(struct timer_list *timer)`：删除定时器；
-2. 定时器时间单位
+   - `int del_timer_sync(struct time_list *timer)`：同步版的删除定时器，它会等待其他处理器使用完定时器再删除，不能使用在中断上下文中。
+3. 定时器时间单位
    - 编译内核时，可以通过 `CONFIG_HZ` 来修改系统滴答（`tick`），100 时表示 10ms 发生一次系统滴答中断。每发生一次 `tick` 中断，全局变量 `jiffies` 就会累加 1；
       ```
       CONFIG_HZ=100
@@ -576,7 +635,7 @@ APP 根据 `poll` 函数的返回值就可以知道是否有数据，如果有�
       mod_timer(&timer, jiffies + xxx);
       mod_timer(&timer, jiffies + 2 * HZ);
       ```
-3. 定时器内部机制
+4. 定时器内部机制
    - 每发生一次硬件中断时，硬件中断处理完后就会看看有没有软件中断（中断下半部）要处理。
    - **定时器中断就是通过软件中断来实现的**，它属于 `TIMER_SOFTIRQ` 类型的软中断；
    - 软中断（包括下半部中断中的 `tasklet`，以及这里的定时器）处理函数的执行上下文均为中断所在的上下文，因此在该函数中不允许休眠；
@@ -603,7 +662,7 @@ APP 根据 `poll` 函数的返回值就可以知道是否有数据，如果有�
       ```
       - `add_timer(...)` 函数会把 `timer` 放到内核中的某个链表（应该是按照超时时间排序的有序链表）；
       - 在 `TIMER_SOFTIRQ` 的处理函数中，会从链表中把这些**超时的** `tiemr` 取出来，执行其中的函数（`timer->expires` 大于等于 `jiffies` 时表示超时）；
-4. 找到系统滴答
+5. 找到系统滴答
    ```bash
    cat /proc/interrupts
    ```
