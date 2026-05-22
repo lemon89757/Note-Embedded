@@ -704,26 +704,29 @@ static int __init xxx_init(void) {
 这些层级关系、硬件中断号（`hwirq`），都会在设备树中有所体现。
 
 ### 设备树中的中断描述
-- `interrupt-controller`：表示当前节点为中断控制器（不是只有 `GIC` 才是中断控制器）；
-- `#interrupt-cells`：中断控制器下的属性，用以表明引用这个中断控制器的话需要多少个 `cell`。经典取值：
-  - `#interrupt-cells=<1>`：使用该中断控制器只需要一个 `cell` 来表明使用“哪一个中断”；
-  - `#interrupt-cells=<2>`：使用该中断控制器需要两个 `cell`，一个用来表示使用“哪一个中断”，另一个表示触发类型（第二个 `cell` 的 `bits[3:0]` 用来表示中断触发类型 `trigger type and level flags`）：
-    - 1 = `low-to-high edge triggered`，上升沿触发；
-    - 2 = `high-to-low edge triggered`，下降沿触发；
-    - 4 = `active high level-sensitive`，高电平触发；
-    - 8 = `active low level-sensitive`，低电平触发；
-  - 示例：
-      ```dts
-      vic: intc@10140000 {
-         compatible = "arm, versatile-vic";
-         interrupt-controller;
-         #interrupt-cells = <1>;
-         reg = <0x10140000 0x1000>;
-      }
-      ```
-      如果中断控制器有级联关系，下级的中断控制器还需要表明它的“`interrupt-parent`” 是谁，用了 `interrupt-parent` 中的哪一个 “`interrupts`”。
-- `interrupt-parents`：指定中断控制器（表示当前中断被该控制器控制）；
-- `interrupts`：指定中断号（可从芯片手册上查找），触发方式等（根据 `#interrupt-cells` 指定信息），可以多个：
+1. `interrupt-controller`：表示当前节点为中断控制器（不是只有 `GIC` 才是中断控制器）；
+2. `#interrupt-cells`：中断控制器下的属性，用以表明引用这个中断控制器的话需要多少个 `cell`。经典取值：
+     - `#interrupt-cells=<1>`：使用该中断控制器只需要一个 `cell` 来表明使用“哪一个中断”；
+     - `#interrupt-cells=<2>`：使用该中断控制器需要两个 `cell`，一个用来表示使用“哪一个中断”，另一个表示触发类型（第二个 `cell` 的 `bits[3:0]` 用来表示中断触发类型 `trigger type and level flags`）：
+       - 1 = `low-to-high edge triggered`，上升沿触发；
+       - 2 = `high-to-low edge triggered`，下降沿触发；
+       - 4 = `active high level-sensitive`，高电平触发；
+       - 8 = `active low level-sensitive`，低电平触发；
+       - 相关宏定义可以参考 `include/linux/irq.h`。
+     - 示例：
+         ```dts
+         vic: intc@10140000 {
+            compatible = "arm, versatile-vic";
+            interrupt-controller;
+            #interrupt-cells = <1>;
+            reg = <0x10140000 0x1000>;
+         }
+         ```
+
+如果中断控制器有级联关系，下级的中断控制器还需要表明它的“`interrupt-parent`” 是谁，用了 `interrupt-parent` 中的哪一个 “`interrupts`”。
+
+3. `interrupt-parents`：指定中断控制器（表示当前中断被该控制器控制）；
+4. `interrupts`：指定中断号（可从芯片手册上查找），触发方式等（根据 `#interrupt-cells` 指定信息），可以多个：
    ```dts
    i2c@7000c000 {
       gpioext: gpio-adnp@41 {
@@ -740,7 +743,7 @@ static int __init xxx_init(void) {
       }
    }
    ```
-- `interrupts-extended`：新写法，可以同时指定 `interrupt-parent` 和 `interrupts`：
+5. `interrupts-extended`：新写法，可以同时指定 `interrupt-parent` 和 `interrupts`：
    ```dts
    interrupts-extended = <&intc1 5 1>, <&intc2 1 0>;
    ```
@@ -760,7 +763,7 @@ soc {
    #address-cells = <1>;
    #size-cells = <1>;
    compatible = "simple-bus";
-   interrupt-parent = <&gpc>;       // 在 soc 节点下的子节点其中断父节点均是 gpc
+   interrupt-parent = <&gpc>;       // 在 soc 节点下的子节点，其中断父节点均是 gpc
 
    gpc: gpc@020dc000 {
       compatible = "fsl,imx6ul-gpc", "fsl,imx6q-gpc"; // arch/arm/mach-imx/gpc.c
@@ -798,6 +801,13 @@ soc {
    - `GPC INTC`: `General Power Controller, Interrupt Controller`，它提供中断屏蔽、中断状态查询功能；
    - 实际上这些功能在 `GIC` 里也实现了；
    - 它还提供唤醒功能，这才是保留它的原因；
+- 可以在《IMX6ULL 参考手册》的 “chapter 3 Interrupts and DMA Events” 章节，找到中断号有关的内容。
+
+- 对于中断控制器 GIC 而言，设备树绑定信息参考文档：`Documentation/devicetree/bindings/arm/gic.txt`。
+- 对于 ARM 处理器的 GIC 来说，`#interrupt-cells` 大小为 3：
+  - 第一个 `cell`：中断类型：0-SPI，1-PPI；
+  - 第二个 `cell`：中断号，对于 SPI 来说是 0~987、对于 PPI 来说是 0~15；
+  - 第三个 `cell`：标志，`bit[3:0]` 表示中断触发类型，同上。`bit[15:8]` 为 PPI 中断的 CPU 掩码。
 
 ### 在代码中获取设备树中的中断信息
 1. 对于 `platform_device`
@@ -819,7 +829,16 @@ soc {
    对于 `SPI` 设备节点，`SPI` 总线驱动在处理设备树中的 `SPI` 子节点时，也会处理其中的中断信息。一个 `SPI` 设备会被转化为一个 `spi_device` 结构体，中断号会被保存在 `spi_device` 的 `irq` 成员里（`drivers/spi/spi.c`）。
 
 3. 调用 `of_irq_get` 获得中断号
-   如果设备节点既不能转化为 `platform_device`，它也不是 `I2C` 设备，不是 `SPI` 设备，那么在驱动程序中可以调用 `of_irq_get` 函数去解析设备树，从而得到中断号。
+   - 如果设备节点既不能转化为 `platform_device`，它也不是 `I2C` 设备，不是 `SPI` 设备，那么在驱动程序中可以调用 `of_irq_get` 函数去解析设备树，从而得到中断号。
+   - 可以通过 `irq_of_parse_and_map` 函数从 `interrupts` 属性中提取对应的中断号：
+      ```c
+      /* 
+       * @dev: 设备节点
+       * @index: 索引号，interrupts 属性可能包含多条中断信息 
+       * @return: 中断号
+       */
+      unsigned int irq_of_parse_and_map(struct device_node *dev, int index);
+      ```
 
 4. 对于 GPIO
    参考：`drivers/input/keyboard/gpio_keys.c`
@@ -845,10 +864,6 @@ soc {
    // 获得中断号
    irq = gpiod_to_irq(bdata->gpiod);
    ```
-
-`irq_of_parse_and_map`
-`gpio_to_irq`
-
 
 ## 中断子系统
 
