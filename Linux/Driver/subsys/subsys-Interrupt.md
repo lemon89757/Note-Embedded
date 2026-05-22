@@ -433,13 +433,18 @@ static int __init xxx_init(void) {
    ```
 `kworker` 线程会去“工作队列”（`work queue`）上取出一个一个“工作”（`work`），来执行它里面的函数。
 
-- 工作队列（`workqueue`）
+工作队列将要推后的工作交给一个内核线程去执行，上下文环境为进程上下文，因此允许休眠或重新调度。
+
+1. 工作队列（`workqueue`）
    内核初始化工作队列时，就为它创建了内核线程。要使用工作队列时，只需要把 `work` 放入到 `workqueue` 中，对应的内核线程就会取出 `work` 并执行里面的函数。
+   - 内核使用 `workqueue_struct` 结构体表示工作队列、使用 `worker` 结构体表示工作线程，具体定义略。在 `worker` 中包含 `workqueue_struct*` 字段。
    - 内核线程、工作队列（`workqueue`）均由内核创建，开发者只需使用即可；
    - 使用流程：
       1. 构造一个 `work_struct` 结构体，里面有需要执行的函数；
       2. 把这个结构体放入工作队列，内核线程就会运行其中的函数；
-- 创建 `work`：
+
+2. 创建 `work`：
+   linux 内核使用 `struct work_struct` 表示一个 `work`：
    ```c
    typedef void (*work_func_t)(struct work_struct *work);
 
@@ -468,14 +473,48 @@ static int __init xxx_init(void) {
    // aer_recover_work_func: 需要在工作队列中执行的函数
    static DECLARE_WORK(aer_recover_work, aer_recover_work_func);
    ```
-- 将 `work` 结构体提交到工作队列
+   - 定义一个 `work_struct` 结构体变量 + `INIT_WORK` 宏来初始化；
+   - `DECLARE_WORK` 宏一次性完成定义和初始化；
+
+3. 将 `work` 结构体提交到工作队列
    ```c
-   schedule_work(&aer_recover_work);
+   // 0-成功，其他-失败
+   bool schedule_work(struct work_struct *work);
    ```
-   - `schedule_work` 将 `aer_recover_work` 提供给系统默认的 `work queue`：`system_wq`，它是一个队列；
+   - `schedule_work` 将 `work` 提供给系统默认的 `work queue`：`system_wq`，它是一个队列；
    - `schedule_work` 同时会将 `kworker` 线程唤醒。此线程抢占到 CPU 资源时，它就会从队列中取出 `work`，执行里面的函数；
    - 可以在中断上半部调用 `schedule_work` 函数；
-- 其他 API
+
+4. 使用示例：
+```c
+// 定义
+struct work_struct testwork;
+
+// 处理函数
+void testwork_funct_t (struct work_struct *work) {
+   // ...
+}
+
+// 中断处理函数
+irqreturn_t test_handler(int irq, void *dev_id) {
+   ...
+   // 调度 work
+   schedule_work(&testwork);
+   ...
+}
+
+// 驱动入口函数
+static int __init xxx_init(void) {
+   ...
+   // 初始化 work
+   INIT_WORK(&testwork, testwork_func_t);
+   // 注册中断处理函数
+   request_irq(xxx_irq, test_handler, 0, "xxx", &xxx_dev);
+   ...
+}
+```
+
+5. 其他 API
    | 函数                                        | 说明                                                                        |
    | ------------------------------------------- | --------------------------------------------------------------------------- |
    | `create_workqueue` | 在 Linux 中已经有了现成的 `system_wq` 等工作队列，不过也可以自己调用该函数创建工作队列。<br />对于 SMP 系统，这个工作队列会有多个内核线程与它对应，创建工作队列时，内核会帮助这个工作队列创建多个内核线程。 |
@@ -487,7 +526,8 @@ static int __init xxx_init(void) {
    | `queue_delayed_work` | 依上类推。 |
    | `flush_work` | 等待一个 `work` 执行完毕。<br />如果这个 `work` 已经被放入队列，那么该函数等它执行完毕，并返回 `true`；<br />如果这个 `work` 已经执行执行完毕才调用该函数，那么直接返回 `false`。|
    | `flush_delayed_work` | 等待一个 `delayed_work` 执行完毕。<br />如果这个 `delayed_work` 已经被放入队列，那么该函数等它执行完毕，并返回 `true`；<br />如果这个 `delayed_work` 已经执行执行完毕才调用该函数，那么直接返回 `false`。|
-- 内部机制
+
+6. 内部机制
   - `work_struct` 中的函数运行于内核线程的上下文；
   - 在 `2.xx` 版本的 Linux 内核中，创建 `workqueue` 时就会创建内核线程；
       ```c
@@ -543,7 +583,8 @@ static int __init xxx_init(void) {
       - 内核线程和工作队列分开创建；
       - 先创建内核线程，再创建 `workqueue`；
       - 一开始每个 `worker_pool` 下只有一个线程，但是系统会根据任务情况动态创建、销毁内核线程；
-- 总结
+
+7. 总结
    - 很耗时的中断处理，应该放到线程里去，可以使用 `work`、`work queue`；
    - 在中断上半部调用 `schedule_work` 函数，触发 `work` 的处理；
    - 工作队列在进程上下文执行，将要推后的工作流交给一个**内核线程**去执行；
@@ -555,7 +596,7 @@ static int __init xxx_init(void) {
 
 以前用 `work` （指工作队列中的任务）来线程化地处理中断，一个 `worker` 线程只能由一个 CPU 执行，多个中断的 `work` 都由同一个 `worker` 线程来处理。
   - 在 `SMP` 系统造成 CPU 资源的浪费；
-  - 依序执行，后面 `work` 的执行；
+  - 依序执行，影响后面 `work` 的执行；
 
 新技术 `threaded irq` 为每一个中断都创建一个内核线程，多个中断的内核线程可以分配到多个 CPU 上执行，从而提高了效率。同时这个内核线程专用于这个中断，避免了依序执行带来的问题。
 
@@ -641,7 +682,7 @@ static int __init xxx_init(void) {
       if (action_ret == IRQ_WAKE_THREAD)
          irq_wake_secondary(desc, action);
       
-      wake_threads_waitq(desc);              // 3. 唤醒等到 thread_fn 的线程
+      wake_threads_waitq(desc);              // 3. 唤醒等待 thread_fn 的线程
    }
    ```
 
