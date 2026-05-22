@@ -184,6 +184,8 @@ local_irq_restore(flags)
 
 软中断不是“软件模拟的中断”，而**是内核的下半部（`Bottom Half`）机制之一**，与硬件中断编号体系完全解耦。
 
+在软中断的执行过程中，仍处在中断上下文环境中。这期间虽然是开中断的，期间内可以处理各类中断，但是毕竟整个中断的处理还没有走完，因此 APP 是无法执行的。
+
 1. 内核使用 `softirq_action` 表示软中断：
 ```c
 // include/linux/interrupt.h
@@ -257,39 +259,40 @@ void __init softirq_init(void) {
 - `softirq_init` 默认开启 `TASKLET_SOFTIRQ` 和 `HI_SOFTIRQ`。
 
 #### tasklet
-在中断下半部的执行过程中，虽然是开中断的，期间可以处理各类中断。但是毕竟整个中断的处理还没有走完，这期间 APP 是无法执行的。
+tasklet 是利用软中断来实现的另一种下半部机制，在软中断和 tasklet 之间，建议使用 tasklet。
 
 当下半部比较耗时但能忍受，并且它的处理比较简单时，可以用 `tasklet` 来处理下半部。
 
-- 封装 `softirq`（软中断）；
-   `tasklet` 是使用 `softirq`（软中断）来实现，对应到软中断的类型为 `TASKLET_SOFTIRQ`。
+1. 封装 `softirq`（软中断）：`tasklet` 是使用 `softirq`（软中断）来实现，对应到软中断的类型为 `TASKLET_SOFTIRQ`。
 
-- 使用方式：
-   1. 先定义 `tasklet`；
+2. tasklet 在内核中的表示：
+```c
+// include/linux/interrupt.h
+struct tasklet_struct {
+   struct tasklet_struct *next;     // 下一个 tasklet
+   unsigned long state;             // tasklet 状态
+   atomic_t count;                  
+   void (*func)(unsigned long);     // tasklet 执行的函数
+   unsigned long data;              // 函数 func 的参数
+}
+```
+- `state`：
+  - `bit0`：表示 `TASKLET_STATE_SCHED`，等于 1 时表示已经执行了 `tasklet_schedule(...)`，将该 `tasklet` 放入队列了。`tasklet_schedule(...)` 会判断该位，如果已经等于 1，那么它就不会再把该 `tasklet` 放入队列；
+  - `bit1`：表示 `TASKLET_STATE_RUN`，等于 1 时表示正在运行 `tasklet` 中的 `func` 函数，函数执行完后内核会把该位清 0。
+- `count`：表示该 `tasklet` 是否使能。0-使能，非 0-被禁止了。对于 `count` 非 0 的 `tasklet`，里面的 `func` 函数不会被执行。
+
+3. 使用方式：
+   1. 定义 + 初始化 `tasklet`；
    2. 需要使用时调用 `tasklet_schedule(...)`；
    3. 驱动卸载前调用 `tasklet_kill(...)`；
    4. 注意：
-      - `tasklet_schedule(...)` 只是把 `tasklet` 放入内核队列，它的 `func` 函数会在软中断的执行过程中被调用；
+      - `tasklet_schedule(...)` 只是把 `tasklet` 放入内核队列，它的 `func` 函数会在软中断的执行过程中被调用，即异步地执行 `func`；
       - 在软中断（包括 `tasklet`）执行过程中不能休眠；
 
-- 数据结构
-   ```c
-   // include/linux/interrupt.h
-   struct tasklet_struct {
-      struct tasklet_struct *next;
-      unsigned long state;
-      atomic_t count;
-      void (*func)(unsigned long);
-      unsigned long data;
-   }
-   ```
-   - `state`：
-     - `bit0`：表示 `TASKLET_STATE_SCHED`，等于 1 时表示已经执行了 `tasklet_schedule(...)` 把该 `tasklet` 放入队列了；`tasklet_schedule(...)` 会判断该位，如果已经等于 1 那么它就不会再次把 `tasklet` 放入队列；
-     - `bit1`：表示 `TASKLET_STATE_RUN`，等于 1 时表示正在只运行 `tasklet` 中的 `func` 函数，函数执行完后内核会把该位清 0；
-   - `count`：表示该 `tasklet` 是否使能。0-使能，非 0-被禁止了。对于 `count` 非 0 的 `tasklet`，里面的 `func` 函数不会被执行；
-
+4. 定义 + 初始化
 - 通过 `task_init` 或者 `DECLARE_TASKLET` 宏等进行结构体数据初始化（使用中断下半部之前，要先实现一个 `tasklet_struct` 结构体）：
    ```c
+   // include/linux/interrupt.h
    #define DECLARE_TASKLET(name, func, data)    struct tasklet_struct name = {NULL, 0, ATOMIC_INIT(0), func, data}
 
    #define DECALRE_TASKLET_DISABLE(name, func, data) struct tasklet_struct name = {NULL, 0, ATOMIC_INIT(1), func, data}
@@ -306,87 +309,120 @@ void __init softirq_init(void) {
    static inline void tasklet_disable(struct tasklet_struct *t);  // 把 count 加 1
    ```
 
-- 调度
-  ```c
-  // 在上半部中通过 task_schedule 注册需要在下半部中进行处理的 tasklet；
-  // 将 tasklet 加入到队列中
-  static inline void tasklet_schedule(struct tasklet_struct *t);
-  ```
+5. 调度
+在上半部中，即中断处理函数中，通过 `task_schedule()` 注册需要在下半部中进行处理的 tasklet。
+```c
+// 将 tasklet 加入到队列中
+static inline void tasklet_schedule(struct tasklet_struct *t);
+```
 
-- kill tasklet
+6. kill tasklet
+通常在卸载驱动程序时调用 `tasklet_kill`。
   ```c
   extern void tasklet_kill(struct tasklet_struct *t);
   ```
   - 如果一个 `tasklet` 未被调度，`tasklet_kill(...)` 会把它的 `TASKLET_STATE_SCHED` 状态清 0；
   - 如果一个 `tasklet` 已被调度，`tasklet_kill(...)` 会等待它执行完毕，再把它的 `TASKLET_STATE_SCHED` 状态清 0；
 
-- 内部机制
-  - `tasklet` 是类型为 `TASKLET_SOFTIRQ` 的软中断（软中断），入口函数为 `tasklet_action`：
-      ```c
-      // kernel/softirq.c
-      void __init softirq_init(void) {
-         ...
-         open_softirq(TASKLET_SOFTIRQ, tasklet_aciton);
-      }
-      ```
-  - `tasklet_action(...)`：
-      ```c
-      static __latent_entropy void tasklet_action(struct softirq_action *a) {
-         struct tasklet_struct *list;
+7. 参考使用示例：
+```c
+// 定义
+struct tasklet_struct testtasklet;
 
-         local_irq_disable();
-         list = __this_cpu_read(tasklet_vec.head);
-         // 整个链表都会处理完，因此新的链表头被置空，等待新的 tasklet 加入在下一次 tasklet_action 中处理
-         __this_cpu_write(tasklet_vec.head, NULL);
-         // 结束位置的哨兵 NULL
-         __this_cpu_write(tasklet_vec.tail, this_cpu_ptr(&tasklet_vec.head));
-         local_irq_enable();
+// 处理函数
+void testtasklet_func(unsigned long data) {
+   // ...
+}
 
-         while (list) {
-            struct tasklet_struct *t = list;
-            list = list->next;
-            if (tasklet_trylock(t)) {
-               if (!atomic_read(&t->count)) {
-                  if (!test_and_clear_bit(TASKLET_STATE_SCHED, &t->state))
-                     BUG();
-                  t->func(t->data);
-                  tasklet_unlock(t);
-                  continue;
-               }
+// 中断处理函数
+irqreturn_t test_handler(int irq, void *dev_id) {
+   ...
+   // 调度 tasklet
+   tasklet_schedule(&testtasklet);
+   ...
+}
+
+static int __init xxx_init(void) {
+   ...
+   // 初始化 tasklet
+   tasklet_init(&testtasklet, testtasklet_func, data);
+   // 注册中断处理函数
+   request_irq(xxx_irq, test_handler, 0, "xxx", &xxx_dev);
+   ...
+}
+```
+
+
+8. 内部机制
+- `tasklet` 是类型为 `TASKLET_SOFTIRQ` 的软中断，入口函数为 `tasklet_action`：
+   ```c
+   // kernel/softirq.c
+   void __init softirq_init(void) {
+      ...
+      open_softirq(TASKLET_SOFTIRQ, tasklet_aciton);
+   }
+   ```
+- `tasklet_action(...)`：
+   ```c
+   static __latent_entropy void tasklet_action(struct softirq_action *a) {
+      struct tasklet_struct *list;
+
+      local_irq_disable();
+      list = __this_cpu_read(tasklet_vec.head);
+      // 整个链表都会处理完，因此新的链表头被置空，等待新的 tasklet 加入在下一次 tasklet_action 中处理
+      __this_cpu_write(tasklet_vec.head, NULL);
+      // 结束位置的哨兵 NULL
+      __this_cpu_write(tasklet_vec.tail, this_cpu_ptr(&tasklet_vec.head));
+      local_irq_enable();
+
+      while (list) {
+         struct tasklet_struct *t = list;
+         list = list->next;
+         if (tasklet_trylock(t)) {
+            if (!atomic_read(&t->count)) {
+               if (!test_and_clear_bit(TASKLET_STATE_SCHED, &t->state))
+                  BUG();
+               t->func(t->data);
                tasklet_unlock(t);
+               continue;
             }
-
-            // 未能成功获取当前 tasklet 的锁
-            // 将该未处理的 tasklet 重新加入队列末尾等待处理
-            local_irq_disable();
-            t->next = NULL;
-            *__this_cpu_read(tasklet_vec.tail) = t;
-            __this_cpu_write(tasklet_vec.tail, &(t->next));
-            __raise_softirq_irqoff(TASKLET_SOFTIRQ);
-            local_irq_enable();
+            tasklet_unlock(t);
          }
-      }
-      ```
-  - 当 `tasklet_schedule(tasklet)` 被调用时，会设置 `tasklet` 的 `state` 为 `TASKLET_STATE_SCHED`，并将 `tasklet` 放入某个链表：
-      ```c
-      static inline void tasklet_schedule(struct tasklet_struct *t) {
-         if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
-            __tasklet_schedule(t);
-      }
 
-      void __tasklet_schedule(struct tasklet_struct *t) {
-         ...
-         // 放入队列
+         // 未能成功获取当前 tasklet 的锁
+         // 将该未处理的 tasklet 重新加入队列末尾等待处理
+         local_irq_disable();
          t->next = NULL;
          *__this_cpu_read(tasklet_vec.tail) = t;
          __this_cpu_write(tasklet_vec.tail, &(t->next));
-         // 触发 TASKLET 软中断
-         raise_softirq_irqoff(TASKLET_SOFTIRQ);
-         ...
+         __raise_softirq_irqoff(TASKLET_SOFTIRQ);
+         local_irq_enable();
       }
-      ```
+   }
+   ```
+   - 当发生硬件中断时，内核处理完硬件中断后，会处理软件中断。对于 TASKLET_SOFTIRQ，会调用 tasklet_action 函数；
+   - tasklet_action 的执行过程大致是：从队列中取出 tasklet，进行判断后执行 func 函数，从队列中删除 tasklet。
+- 当 `tasklet_schedule(tasklet)` 被调用时，会设置 `tasklet` 的 `state` 为 `TASKLET_STATE_SCHED`，并将 `tasklet` 放入某个链表：
+   ```c
+   static inline void tasklet_schedule(struct tasklet_struct *t) {
+      if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
+         __tasklet_schedule(t);
+   }
+
+   void __tasklet_schedule(struct tasklet_struct *t) {
+      ...
+      // 放入队列
+      t->next = NULL;
+      *__this_cpu_read(tasklet_vec.tail) = t;
+      __this_cpu_write(tasklet_vec.tail, &(t->next));
+      // 触发 TASKLET 软中断
+      raise_softirq_irqoff(TASKLET_SOFTIRQ);
+      ...
+   }
+   ```
+  - `tasklet_schedule()` 只是把 tasklet 放入队列；
   - 调用一次 `tasklet_schedule(tasklet)`，只会导致 `tasklet` 的函数被执行一次，而且不是调用 `tasklet_schedule(...)` 后就马上执行；
-  - 如果 `tasklet` 的函数尚未执行，多次调用 `tasklet_schedule(...)` 也是无效的，因为它只会将未调度的 `tasklet` 放入队列一次；
+  - 如果 `tasklet` 的函数尚未执行，多次调用 `tasklet_schedule(...)` 也是无效的，因为它只会将未调度的 `tasklet` 放入队列一次。
 
 #### 工作队列
 如果中断要做的事情实在太耗甚至需要休眠时，那就不能用软中断来做，而应该用**内核线程**来做：在中断上半部唤醒内核线程。内核线程和 APP 都一样竞争执行，APP 有机会执行，系统不会卡顿。
