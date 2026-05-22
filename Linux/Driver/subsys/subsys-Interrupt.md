@@ -78,11 +78,11 @@ Linux 系统中有**硬件中断，也有软件中断**。对硬件中断的处�
                      if (!in_interrupt() && local_softirq_pending()) // in_interrupt: preemt_count > 0
                         invoke_softirq()
                            __do_softirq()
-                              __local_bh_disable_ip(_RET_IP_, SOFTIRQ_OFFSET) // preempt_count++，开始软件中断
+                              __local_bh_disable_ip(_RET_IP_, SOFTIRQ_OFFSET) // preempt_count++，开始软中断
                               local_irq_enable()   // 开中断
                               // 执行 softirq_vec 数组上各类软中断：下半部
                               local_irq_disable()  // 关中断，马上就会再开中断
-                              __local_bh_enable(SOFTIRQ_OFFSET)   // preempt_count--，完成软件中断
+                              __local_bh_enable(SOFTIRQ_OFFSET)   // preempt_count--，完成软中断
    // 通过 preempt_count 避免软中断多次执行
    // 在处理软中断时开中断
    ```
@@ -108,57 +108,153 @@ Linux 系统中有**硬件中断，也有软件中断**。对硬件中断的处�
    - 关中断情况下进行处理；
    - 此时无法处理其他中断；
 
-### 下半部
-下半部机制有如下几种，`Bottom half, BH` 已被废弃，主要使用软中断和 `tasklet`：
-1. 软中断
-   - `softirq_action` 结构体 + `softirq_action softirq_vec[NR_SOFTRQS](全局数组)`；
-   - 通过 `open_softirq` 向上述数组中注册中断处理函数，中断发生时从数组中取出对应的处理函数并执行；
-   - 通过 `raise_softirq` 触发处理；
-   - 软中断必须在编译的时候静态注册；
-#### 软件中断
-人为制造中断：软件中断（`soft irq`）。即下文提到的软中断。
-
-内核软件触发的异步处理机制，与中断编号无关，是完全独立的机制；
-
-软中断不是“软件模拟的中断”，而**是内核的下半部（`Bottom Half`）机制之一**，与硬件中断编号体系完全解耦；
-
-- 表示方式：通过位图 `__softirq_pending` 标记 `pending` 状态；
-   ```c
-   // 软中断处理函数原型
-   typedef void (*softirq_func_t)(struct softirq_aciton *);
-
-   // 软件中断表（全局，与硬件中断无关）
-   static struct softirq_action softirq_vec[NR_SOFTIRQS] __cacheline_aligned;
-   ```
-- 软件中断类型（有哪些软件中断）：软件中断没有编号概念，只有类型。
+1. 注册中断处理函数
+```c
+// 为某个硬件中断 irq 注册中断处理函数 handler
+int request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags, const char *name, void *dev);
+```
+- `request_irq()` 会使能中断；可能会导致休眠，因此不能再中断上下文或者其他禁止休眠的代码段中使用 `request_irq` 函数；
+- `handler` 函数需要尽可能高效；
+- `flag`：
    ```c
    // include/linux/interrupt.h
-   enum {
-      HI_SOFTIRT=0,        // 高优先级 tasklet
-      TIMER_SOFTIRQ,       // 定时器
-      NET_TX_SOFTIRQ,      // 网络发送
-      NET_RX_SOFTIRQ,      // 网络接收
-      BLOCK_SOFTIRQ,       // 块设备
-      IRQ_POLL_SOFTIRQ,    // 轮询
-      TASKLET_SOFTIRQ,     // 普通 tasklet
-      SCHED_SOFTIRQ,       // 调度
-      HRTIMER_SOFTIRQ,     // 高精度定时器；Unused, but kept as tools rely on the numbering, Sigh!
-      RCU_SOFTIRQ,         // RCU；Preferable RCU should always be the last softirq
-      NR_SOFTIRQS          // 总数（10 个）
-   }
+
+   // 多个设备共享一个中断，所有共享的中断都必须指定此标志。如果使用共享中断的话，dev 参数就是唯一区分它们的标志
+   IRQF_SHARED
+   // 单次中断，中断执行一次就结束
+   IRQF_ONESHOT
+   // 无触发
+   IRQF_TRIGGER_NONE
+   // 上升沿触发
+   IRQF_TRIGGER_RISING
+   // 下降沿触发
+   IRQF_TRIGGER_FALLING
+   // 高电平触发
+   IRQF_TRIGGER_HIGH
+   // 低电平触发
+   IRQF_TRIGGER_LOW
    ```
-- 产生时机：由软件决定，对于 X 号软件中断，只需要把它的 `flag`（掩码对应 bit）设置为 1 就表示发生了该中断；
+- `name`：中断名，设置以后可以在 `/proc/interrupts` 文件中看到对应的中断名字；
+- `dev`：**如果将 `flags` 设置为 `IRQF_SHARED` 的话，`dev` 用来区分不同的中断**。一般情况下将其设置为设备结构体，它会以第二个参数传递给中断处理函数。
+- 返回值：0-中断申请成功；其他负值-中断申请失败，-EBUSY 表示中断已经被申请了。
+
+2. 释放中断
+```c
+// 使用完后释放中断
+// 共享中断时，通过 dev 参数来进行区分。只有当最后一个中断处理函数被释放后共享中断才会被禁止掉。
+void free_irq(unsigned int irq, void *dev);
+```
+
+3. 中断处理函数
+```c
+// 中断处理函数
+// int: 中断号
+irqreturn_t (*irq_handler_t)(int, void*);
+
+// 返回值类型 irqreturn_t 为枚举类型：
+enum irqreturn {
+   IRQ_NONE          = (0 << 0),
+   IRQ_HANDLED       = (1 << 0),
+   IRQ_WAKE_THREAD   = (1 << 1),
+};
+typedef enum irqreturn irqreturn_t
+// 一般中断服务函数返回值使用的形式：return IRQ_RETVAL(IRQ_HANDLED)
+```
+
+4. 中断使能与禁止
+```c
+void enable_irq(unsigned int irq);
+void disable_irq(unsigned int irq);          // 需要等到当前正在执行的中断处理函数执行完才返回
+void disable_irq_nosync(unsigned int irq);   // 立即返回
+
+// 使能/失能当前处理器中断系统
+local_irq_enable()
+local_irq_disable()
+
+// 带有中断标志的使能和失能
+local_irq_save(flags)
+local_irq_restore(flags)
+```
+
+### 下半部
+#### 软中断
+一开始 Linux 内核提供了 `Bottom half, BH` 机制来实现下半部，不过已被废弃（2.5 版本），目前主要使用软中断和 `tasklet`。
+
+人为制造中断：软中断（`soft irq`）。是内核软件触发的异步处理机制，与中断编号无关，是完全独立的机制。
+
+软中断不是“软件模拟的中断”，而**是内核的下半部（`Bottom Half`）机制之一**，与硬件中断编号体系完全解耦。
+
+1. 内核使用 `softirq_action` 表示软中断：
+```c
+// include/linux/interrupt.h
+struct softirq_action {
+   void (*action)(struct softirq_action *);     // 软中断服务函数
+}
+```
+
+2. 软中断类型（有哪些软中断）：软中断没有编号概念，只有类型。
+```c
+// include/linux/interrupt.h
+enum {
+   HI_SOFTIRT=0,        // 高优先级 tasklet
+   TIMER_SOFTIRQ,       // 定时器
+   NET_TX_SOFTIRQ,      // 网络发送
+   NET_RX_SOFTIRQ,      // 网络接收
+   BLOCK_SOFTIRQ,       // 块设备
+   IRQ_POLL_SOFTIRQ,    // 轮询
+   TASKLET_SOFTIRQ,     // 普通 tasklet
+   SCHED_SOFTIRQ,       // 调度
+   HRTIMER_SOFTIRQ,     // 高精度定时器；Unused, but kept as tools rely on the numbering, Sigh!
+   RCU_SOFTIRQ,         // RCU；Preferable RCU should always be the last softirq
+   NR_SOFTIRQS          // 总数（10 个）
+}
+```
+
+3. 软中断表-10 个软中断
+```c
+// kernel/softirq.c
+// 软中断表（全局，与硬件中断无关）
+static struct softirq_action softirq_vec[NR_SOFTIRQS] __cacheline_aligned;
+```
+- 所有 CPU（对于 SMP 系统而言）都可以访问到，每个 CPU 都有自己的触发和控制机制，并且**只执行自己所触发的软中断**；但是各个 CPU 所执行的软中断服务函数却是相同的，都是 `softirq_vec` 中定义的 `action` 函数。
+
+4. 注册软中断处理函数
+```c
+/* 
+ * @nr: 要开启的软中断，从软中断枚举类型中选择
+ * @action: 软中断对应的处理函数
+ */
+extern void open_softirq(int nr, void (*action)(struct softirq_action *));
+```
+
+5. 触发方式
+   通过 `raise_softirq()` 来触发，参数是从软中断类型中选择一个需要触发的软中断。
+- 表示方式：通过位图 `__softirq_pending` 标记 `pending` 状态；
+   
+- 触发时机：由软件决定，对于 X 号软中断，只需要把它的 `flag`（掩码对应 bit）设置为 1 就表示发生了该中断；
    ```c
    __raise_softirq_irqoff(nr);      // 设置 __softirq_pending 位图
 
    // 对上述函数的进一步包装？
    extern void raise_softirq(unsigned int nr);     // 简单理解就是设置 softirq_veq[nr] 的标记位
    ```
-- 处理时机：在处理完硬件中低端后，再处理软件中断。（各种硬件中断频繁发生，至少定时器中断每 10ms 发生一次）；
-- 设置软件中断处理函数
-   ```c
-   extern void open_softirq(int nr, void (*action)(struct softirq_action *));
-   ```
+
+- 处理时机：在处理完硬件中断后，再处理软中断。（各种硬件中断频繁发生，至少系统时钟中断每 10ms 发生一次）；
+
+6. **软中断必须在编译的时候静态注册**，内核使用 `softirq_init()` 函数来初始化软中断：
+```c
+void __init softirq_init(void) {
+   int cpu;
+   for_each_possible_cpu(cpu) {
+      per_cpu(tasklet_vec, cpu).tail = &per_cpu(tasklet_vec, cpu).head;
+      per_cpu(tasklet_hi_vec, cpu).tail = &per_cpu(tasklet_hi_cpu, cpu).head;
+   }
+
+   open_softirq(TASKLET_SOFTIRQ, tasklet_action);
+   open_softirq(HI_SOFTIRQ, tasklet_hi_action);
+}
+```
+- `softirq_init` 默认开启 `TASKLET_SOFTIRQ` 和 `HI_SOFTIRQ`。
 
 #### tasklet
 在中断下半部的执行过程中，虽然是开中断的，期间可以处理各类中断。但是毕竟整个中断的处理还没有走完，这期间 APP 是无法执行的。
@@ -166,15 +262,15 @@ Linux 系统中有**硬件中断，也有软件中断**。对硬件中断的处�
 当下半部比较耗时但能忍受，并且它的处理比较简单时，可以用 `tasklet` 来处理下半部。
 
 - 封装 `softirq`（软中断）；
-   `tasklet` 是使用 `softirq`（软件中断）来实现，对应到软件中断的类型为 `TASKLET_SOFTIRQ`。
+   `tasklet` 是使用 `softirq`（软中断）来实现，对应到软中断的类型为 `TASKLET_SOFTIRQ`。
 
 - 使用方式：
    1. 先定义 `tasklet`；
    2. 需要使用时调用 `tasklet_schedule(...)`；
    3. 驱动卸载前调用 `tasklet_kill(...)`；
    4. 注意：
-      - `tasklet_schedule(...)` 只是把 `tasklet` 放入内核队列，它的 `func` 函数会在软件中断的执行过程中被调用；
-      - 在软件中断（包括 `tasklet`）执行过程中不能休眠；
+      - `tasklet_schedule(...)` 只是把 `tasklet` 放入内核队列，它的 `func` 函数会在软中断的执行过程中被调用；
+      - 在软中断（包括 `tasklet`）执行过程中不能休眠；
 
 - 数据结构
    ```c
@@ -225,7 +321,7 @@ Linux 系统中有**硬件中断，也有软件中断**。对硬件中断的处�
   - 如果一个 `tasklet` 已被调度，`tasklet_kill(...)` 会等待它执行完毕，再把它的 `TASKLET_STATE_SCHED` 状态清 0；
 
 - 内部机制
-  - `tasklet` 是类型为 `TASKLET_SOFTIRQ` 的软件中断（软中断），入口函数为 `tasklet_action`：
+  - `tasklet` 是类型为 `TASKLET_SOFTIRQ` 的软中断（软中断），入口函数为 `tasklet_action`：
       ```c
       // kernel/softirq.c
       void __init softirq_init(void) {
@@ -293,7 +389,7 @@ Linux 系统中有**硬件中断，也有软件中断**。对硬件中断的处�
   - 如果 `tasklet` 的函数尚未执行，多次调用 `tasklet_schedule(...)` 也是无效的，因为它只会将未调度的 `tasklet` 放入队列一次；
 
 #### 工作队列
-如果中断要做的事情实在太耗甚至需要休眠时，那就不能用软件中断来做，而应该用**内核线程**来做：在中断上半部唤醒内核线程。内核线程和 APP 都一样竞争执行，APP 有机会执行，系统不会卡顿。
+如果中断要做的事情实在太耗甚至需要休眠时，那就不能用软中断来做，而应该用**内核线程**来做：在中断上半部唤醒内核线程。内核线程和 APP 都一样竞争执行，APP 有机会执行，系统不会卡顿。
 
 内核线程是系统帮助创建的，一般是 `kworker` 线程，通过下述命令可查看相关的线程信息：
    ```bash
@@ -682,6 +778,20 @@ soc {
 ### 子系统 API
 - [ ] 补充中断子系统相关 API
 
+### 中断的处理
+- [ ] 添加中断 pipeline
+- [ ] 添加各个数据结构的关系图
+
+- 中断的输入：多个外部设备可以共享一个 GPIO 中断（例如中断号 B），多个 GPIO 中断汇聚到 GIC（通用中断控制器）（例如中断号 A），GIC 再去中断 CPU；
+- 中断的处理：
+  1. 先读取 GIC 获得中断号 A：
+     GIC 中断 CPU 时，CPU 读取 GIC 状态得到中断号并执行 GIC 处理函数：假设 `irq_desc[A].handle_irq` 是 `xxx_gpio_irq_handler`（`xxx` 指厂家）；
+  2. 再细分出 GPIO 中断 B：
+     `xxx_gpio_irq_handler` 读取芯片的 GPIO 控制器获取发生的是哪一个 GPIO 中断（假设为 B）。`irq_desc[A].handle_irq` 调用对应的 `irq_desc[B].handle_irq`；
+  3. 最后判断是哪一个外部设备发生了中断：
+     `irq_desc[B].handle_irq`，BSP 开发人员会设置对应的处理函数，一般是 `handle_level_irq` 或 `handle_edge_irq`。导致 GPIO 中断 B 发生的原因很多，可能是外部设备 1，可能是外部设备 n，可能只是某一个设备，也有可能是多个设备。**所以 `irq_desc[B].handle_irq` 会调用某个链表里面的函数，这些函数由外部设备提供，它们能够自行判断该中断是否是自己产生，若是则处理**。
+- 对于共享中断，比如 GPIO 中断 B，它的中断来源可能有多个，每个中断源对应一个中断处理函数。所以 `irq_desc[B]` 应该有一个链表，存放着多个中断源的处理函数。**一旦确定发生了 GPIO 中断 B，那么就会从链表里把这些函数取出来一一执行，这个链表就是 `action` 链表**。
+
 ### 数据结构
 可以从函数 `request_irq` 一路分析得到。位置：`include/linux/interrupt.h`。
 
@@ -720,6 +830,8 @@ struct irq_desc {
    };
    ```
   - 在 `irqaction` 中保存了 `name`、`dev_id` 等内容，最重要的是 `handler`、`thread_fn`、`thread`；
+  - `handler` 是中断处理的上半部函数，用来处理紧急的事情；
+  - `thread_fn` 对应一个内核线程 `thread`。在内核线程里会调用 `thread_fn` 函数；
 - 当调用 `request_irq`、`request_threaded_irq` 注册中断处理函数时，内核就会构造一个 `irqaction` 结构体；
 - `dev_id` 的作用：
    在调用 `request_irq` 和 `request_threaded_irq` 函数时传入 `void *dev` 参数，`dev_id` 的作用有：
