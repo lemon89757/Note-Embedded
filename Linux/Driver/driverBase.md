@@ -47,7 +47,7 @@ typedef struct __wait_queue_head wait_queue_head_t;
 // 初始化等待队列头
 void init_waitqueue_head(wait_queue_head_t *q);
 // 使用宏完成定义 + 初始化
-DECLARE_WAIT_QUEUE_HEAD
+DECLARE_WAIT_QUEUE_HEAD(name)
 ```
 每个访问设备的进程都是一个队列项：
 ```c
@@ -95,13 +95,25 @@ void remove_wait_queue(wait_queue_head_t *q, wait_queue_t *wait);
    - 在驱动的 `read` 函数中，调用 `wait_event_interruptible`（它本身会判断 `event` 是否为 `FALSE`。如果为 `FALSE` 表示无数据，则休眠。因此该函数的调用并不一定导致休眠。）；
    - 当从 `wait_event_interruptible` 返回后，把数据复制回用户空间；
    - 在中断服务程序中：设置 `event` 为 `TRUE`，并调用 `wake_up_interruptible` 唤醒线程；
-   - [ ] 补充相关示例代码（环形缓冲区）
    ```c
    #define BUF_LEN 128
+   #define NEXT_POS(x) ((x + 1) % BUF_LEN)
+
+   struct gpio_key{
+      int gpio;
+      int irq;
+      int flags;
+      struct gpio_desc *gpiod;
+   }
+
    static int g_keys[BUF_LEN];
    static int r, w;
 
-   #define NEXT_POS(x) ((x + 1) % BUF_LEN)
+   static DECLARE_WAIT_QUEUE_HEAD(gpio_key_wait);
+
+   static inline int next_pos(int x) {
+      return NEXT_POS(x);
+   }
 
    static int is_key_buf_empty(void) {
       return r == w;
@@ -126,6 +138,109 @@ void remove_wait_queue(wait_queue_head_t *q, wait_queue_t *wait);
       }
       return key;
    }
+
+   static ssize_t gpio_key_read(struct file *filp, char __user *buf, size_t size, loff_t offt) {
+      int err;
+      int val;
+
+      wait_event_interruptible(gpio_key_wait, !is_key_buf_empty());
+
+      val = get_key();
+      err = copy_to_user(buf, &val, sizeof(val));
+
+      return sizeof(val);
+   }
+
+   static struct file_operations gpio_key_opr = {
+      .owner = THIS_MODULE,
+      .read = gpio_key_read,
+   }
+
+   static irqreturn_t gpio_keys_isr(int irq, void *dev_id) {
+      int val;
+      int key;
+      struct gpio_key *gpio_key = dev_id;
+      val = gpiod_get_value(gpio_key->gpiod);
+      printk("get value %d from gpio %d\n", val, gpio_key->gpio);
+
+      key = (gpio_key->gpio << 8) | val;
+      put_key(key);
+      wake_up_interruptible(&gpio_key_wait);
+
+      return IRQ_HANDLED;
+   }
+
+   static int gpio_key_probe(struct platform_device *pdev) {
+      int i;
+      int err;
+      int count;
+      int flags = GPIOF_IN;
+      enum of_gpio_flags flag;
+      struct gpio_key *gpio_keys;
+      struct device_node *node = pdev->dev.of_node;
+
+      // 解析硬件数据
+      // 获取 platform device 对应的 gpio 数量
+      count = of_gpio_count(node);
+      if(!count){
+         printk("%s %s line:%d, there is not gpio available!\n", __FILE__, __FUNCTION__, __LINE__);
+         return -1;
+      }
+
+      // 申请 count 个 gpio_key 对应的内存
+      gpio_keys = kzalloc(sizeof(struct gpio_key) * count, GFP_KERNEL);
+
+      // 解析 gpio 信息，如 gpio，irq 以及 gpio desc 等
+      for(i = 0; i < count; i++){
+         gpio_keys[i].gpio = of_get_gpio_flags(node, i, &flag);
+         if(gpio_keys[i].gpio < 0){
+               printk("%s %s line: %d, failed to get gpio!\n", __FILE__, __FUNCTION__, __LINE__);
+               return -1;
+         }
+         gpio_keys[i].gpiod = gpio_to_desc(gpio_keys[i].gpio);
+         gpio_keys[i].irq = gpiod_to_irq(gpio_keys[i].gpiod);
+         if(flag & OF_GPIO_ACTIVE_LOW)
+               flags |= GPIOF_ACTIVE_LOW;
+         devm_gpio_request_one(&pdev->dev, gpio_keys[i].gpio, flags, NULL);
+      }
+
+      for(i = 0; i < count; i++){
+         err = request_irq(gpio_keys[i].irq, gpio_keys_isr, IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING, NULL, &gpio_keys[i]);
+      }
+      pdev->dev.platform_data = gpio_keys;
+
+      // 注册 file_operations 结构体
+      fops_name = "gpio_key_ops";
+      major = register_chrdev(0, fops_name, &gpio_key_opr);
+      // 创建设备类
+      gpio_key_class = class_create(THIS_MODULE, "gpio_key_circle");
+      if(IS_ERR(gpio_key_class)){
+         printk("%s %s line:%d, failed to create gpio key class!\n", __FILE__, __FUNCTION__, __LINE__);
+         unregister_chrdev(major, fops_name);
+         return PTR_ERR(gpio_key_class);
+      }
+
+      device_create(gpio_key_class, NULL, MKDEV(major, 0), NULL, "gpio_key_drv_circle_%d", 0);
+
+      return 0;
+   }
+
+   static int gpio_key_remove(struct platform_device *pdev){
+      struct gpio_key *key;
+      
+      device_destroy(gpio_key_class, MKDEV(major, 0));
+      class_destroy(gpio_key_class);
+      unregister_chrdev(major, fops_name);
+
+      key = pdev->dev.platform_data;
+      for(; key; key++){
+         free_irq(key->gpio, key);
+      }
+      kfree(pdev->dev.platform_data);
+
+      return 0;
+   }
+   ...
    ```
    ```c
    // 通过按键实现阻塞、非阻塞、POLL 读取
@@ -327,28 +442,320 @@ void remove_wait_queue(wait_queue_head_t *q, wait_queue_t *wait);
    }
    ```
 4. 应用程序使用
-   - [ ] 补充相关内容
+   ```c
+   int main(int argc, char *argv[]) {
+      int fd;
+      int ret = 0;
+      unsigned char data;
+
+      if (argc != 2) {
+         printf("Error Usage!\n");
+         return -1;
+      }
+
+      fd = open(argv[1], O_RDWR);
+      if (fd < 0) {
+         printf("failed to open this file:%s", argv[1]);
+         return -1;
+      }
+
+      while (1) {
+         ret = read(fd, &data, sizeof(data));
+         if (ret < 0) {
+               // 数据读取错误或无效
+         } else {
+               if (data)
+                  printf("get key value = %x\n", data);
+         }
+      }
+
+      close(fd);
+
+      return 0;
+   }
+   ```
 
 ### POLL 机制
 **适用场景**：阻塞 + 超时；
 
-APP 不知道驱动程序中是否有数据，可以先调用 `poll` 函数查询以下，`poll` 函数可以传入超时时间。
+APP 不知道驱动程序中是否有数据，可以先调用 `poll` 函数查询一下，`poll` 函数可以传入超时时间。
 
-APP 调用 `poll` 函数后，进入到内核态中驱动的 `poll` 函数：
+APP 调用 `poll, select, epoll` 函数（用于处理轮询）后，进入到内核态中驱动的 `poll` 函数：
 - 如果有数据的话立即返回；
 - 如果没有数据就休眠直到超时时间（内核唤醒 APP）或者在这之前已收到数据（中断服务程序被调用，在其中接收数据并唤醒 APP）；
 
-APP 根据 `poll` 函数的返回值就可以知道是否有数据，如果有则可以调用 `read` 函数获取数据。
+APP 根据这些函数的返回值就可以知道是否有数据，如果有则可以调用 `read` 函数获取数据。
 
 1. 从应用到驱动的 poll 流程
 - [ ] 补充示意图
 
 2. 驱动示例
+- poll 函数原型：
+   ```c
+   /* 
+    * @filp: 要打开的设置文件
+    * @wait: 由应用程序传递进来的，一般将此参数传递给 poll_wait 函数 
+    * @return: 向应用程序返回设备或资源状态
+    */
+   unsigned int (*poll)(struct file *filp, struct poll_table_struct *wait);
+
+   // 返回状态：
+   POLLIN         // 有数据可读取
+   POLLPRI        // 有紧急的数据需要读取
+   POLLOUT        // 可写数据
+   POLLERR        // 指定的文件描述符发生错误
+   POLLHUP        // 指定的文件描述符挂起
+   POLLNVAL       // 无效的请求
+   POLLRDNORM     // 等同于 POLLIN，普通数据可读
+   ```
+- 在驱动程序的 `poll()` 中调用 `poll_wait()`，`poll_wait()` 不会引起阻塞，只是将应用程序添加到 poll_table 中：
+   ```c
+   /* 
+    * @wait_address: 要添加到 poll_table 中的等待队列头
+    * @p: 即 poll 函数中的 wait 参数 
+    */
+   void poll_wait(struct file *flip, wait_queue_head_t *wait_address, poll_table *p);
+   ```
+- 驱动示例：
+   ```c
+   void timer_func(unsigned long arg) {
+      unsigned char value;
+      unsigned char num;
+      struct irq_keydesc *keydesc;
+      struct imx6uirq_dev *dev = (struct imx6uirq_dev*)arg;
+
+      num = dev->currkeynum;
+      keydesc = &dev->irqkeydesc[num];
+
+      value = gpio_get_value(keydesc->gpio);
+      if (value == 0) {
+         // 按键按下
+         atomic_set(&dev->keyvalue, keydesc->value);
+      } else {
+         atomic_set(&dev->keyvalue, 0x80 | keydesc->value);
+         atomic_set(&dev->releasekey, 1);
+      }
+
+      if (atomic_read(&dev->releasekey)) {
+         wake_up_interruptible(&dev->r_wait);
+      }
+   }
+
+   unsigned int imx6uirq_poll(struct file *filp, struct poll_table_struct *wait) {
+      unsigned int mask = 0;
+      struct imx6uirq_dev *dev = (struct imx6uirq_dev*)filp->private_data;
+
+      // dev->r_wait 为等待队列头
+      poll_wait(filp, &dev->r_wait, wait);
+
+      if (atomic_read(&dev->releasekey)) {
+         mask = POLLIN | POLLRDNORM;
+      }
+      return mask;
+   }
+   ```
 
 3. 应用程序使用
+- select
+   ```c
+   /* 
+    * @readfds, writefds, exceptfds: 指向描述符集合，表明关心哪些
+    *  描述符。readfds 用于监视指定描述符集的读变化（是否可读），只要
+    *  集合中一个文件可读，select 就会返回一个大于 0 的值表示有文件可
+    *  读取。如果没有文件可读取，则根据 timeout 参数来判断是否超时。
+    *  可以将 readfds 设置为 NULL，表示不关心任何文件的读变化。
+    *  另外两个以此类推。writefds-可写、exceptfds-文件异常。
+    * @nfds: 所要监视的这三类文件描述符集合中，最大文件描述符加 1
+    *（This argument should be set to the highest-numbered file
+    * descriptor in any of the three sets, plus 1. The indicated
+    * file descriptors in each set are checked, up to this limit.） 
+    * @return: 发生错误时，返回 -1，同时 errno 被设置；成功时，返回
+    *  三个集合中文件描述符的数量（the total number of bits that are set in readfds, writefds, exceptfds）；0-超时。
+    */
+   int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout);
+
+   struct timeval {
+      long tv_sec;   // 秒
+      long tv_usec;  // 微妙
+   };
+   ```
+   - man: select, pselect, FD_CLR, FD_ISSET, FD_SET, FD_ZERO - **synchronous I/O multiplexing**.
+   - man:（功能描述）select() allows a program to monitor multiple file descriptors, waiting until one or more the fd becomes "ready" for some class of I/O operation (e.g., input possible). A fd is considered ready if it is possible to perform a corresponding I/O operation (e.g., read, or a sufficently small write) without blocking.
+   - man: **select() can monitor only fd numbers that are less than FD_SETSIZE( 一般为 1024), poll and epoll do not have this limitation**.
+   - man: Note，Upon return, each of the fd sets is modified in place to indicate which fd are currently "ready". Thus, **if using select() within a loop, the sets must be reinitialized before each call**. **The implementation of the fd_set arguments as value-result arguments is a design error that is avoided in poll and epoll**.
+   - man: The content of a file descriptor set can be manipulated using the following macros:
+     - `FD_ZERO()`: clears (remove all file descriptors from) set. It should be employed as the first step in initializing a file descriptor set.
+     - `FD_SET()`: adds the fd to set. Adding a fd that is already present in the set is a no-op, and does not produce an error.
+     - `FD_CLR()`: removes the fd from set. Removing a fd that is not present in the set is a no-op.
+     - `FD_ISET`: select() modifies the contents of the sets according to the rules. After calling select(), this macro can be used to test if a fd is still present in a set. It returns nonzero if fd is present in set, and zero if it is not.
+   - **当 select() 函数返回时，只有那些 “ready” 状态的 fd 会继续留在 fd_set 里，其他的则会被删除**。
+   - man: the call will block until either:
+     - a file descriptor becomes ready;
+     - the call is interrupted by a signal handler; or
+     - the timeout expires.
+   - If both fields of the timeval structure are zero, then select() returns immediately. (This is useful for polling.) If timeout is specified as NULL, select() blocks indefinitely waiting for a fd to become ready.
+   - 示例程序：
+      ```c
+      int main(void) {
+         int ret, fd;
+         fd_set readfds;
+         struct timeval timeout;
+
+         fd = open("dev_xxx", O_RDWR | O_NONBLOCK);
+         if (fd < 0) {
+            return -1;
+         }
+         
+         FD_ZERO(&readfds);
+         FD_SET(fd, &readfds);
+
+         timeout.tv_sec = 0;
+         timeout.tv_usec = 500000;  // 500ms
+
+         ret = select(fd + 1, &readfds, NULL, NULL, &timeout);
+         switch (ret) {
+            case 0:
+               printf("timeout\n");
+               break;
+            case -1:
+               printf("error\n");
+               break;
+            default:
+               if (FD_ISSET(fd, &readfds)) {
+                  // 读取数据
+               }
+               break;
+         }
+
+         close(fd);
+         return 0;
+      }
+      ```
+
+- poll
+   poll 函数本质上和 select 没有太大差别，但是 poll 函数没有最大文件描述符限制。
+   ```c
+   /* 
+    * @fds: 要监视的文件描述符集合，以及要监视的事件，为一个数组 
+    * @nfds: 要监视的文件描述符数量
+    * @timeout: 超时时间，单位为 ms
+    * @return: revents 域中不为 0 的 pollfd 结构体个数，也就是发生
+    *  事件或错误的文件描述符数量；0-超时；-1-发生错误，并设置 errno
+    */
+   int poll(struct pollfd *fds, nfds_t nfds, int timeout);
+
+   // 如果文件描述符无效的话，events 监视事件也无效，并且 revents 返回 0。
+   struct pollfd {
+      int fd;           // 文件描述符
+      short events;     // 请求的事件，输入参数，bit mask
+      short revents;    // 返回的事件，输出参数，bit mask
+   };
+   
+   // events 表示要监视的事件，可选类型如下：
+   POLLIN         // 有数据可读
+   POLLPRI        // 有紧急的数据需要读取
+   POLLOUT        // 可写
+   POLLERR        // 指定的文件描述符发生错误
+   POLLHUP        // 指定的文件描述符挂起
+   POLLNVAL       // 无效的请求
+   POLLRDNORM     // 等同于 POLLIN
+   // 如果 events 被指定为 0，只有 POLLHUP, POLLERR 和 POLLNVAL 可以被返回；当 events 不为 0 时，revents 也可以包含这些 bits。这三个 bit 对 events 是无意义的，只有对应的事件发生时才会设置 revents。
+   ```
+   - man:（功能描述）poll() performs a similar task to select(): it waits for one of a set of file descriptors to become ready to perform I/O. The Linux-specific epoll API performs a similar task, buf offers features beyond those found in poll().
+   - man: If none of the events requested (and no error) has occurred for any of the file descriptors, the poll() blocks until one of the events occurs.
+   - man: The call will block until either:
+     - a file descriptor becomes ready;
+     - the call is interrupted by a signal handler; or
+     - the timeout expires.
+   - man: specifying a negative value in timeout means an infinite timeout. Specifying a timeout of zero causes poll() to return immediately, even if no file descriptors are ready.
+   - 示例程序：
+      ```c
+      int main(void) {
+         int ret;
+         int fd;
+         struct pollfd fds;
+
+         fd = open(filename, O_RDWR | O_NONBLOCK);
+         if (fd < 0) {
+            return -1;
+         }
+
+         fds.fd = fd;
+         fds.events = POLLIN;
+
+         ret = poll(&fds, 1, 500);
+         if (ret > 0) {
+            // 读取数据
+         } else if (ret == 0) {
+            // 超时
+         } else {
+            // 错误
+         }
+
+         close(fd);
+         return 0;
+      }
+      ```
+
+- epoll
+  - 传统的 select 和 poll 函数都会随着所监听的 fd 数量的增加，出现效率低下的问题（轮询监听导致，poll 函数每次必须遍历所有的描述符来检查是否有就绪的，这个过程很耗费时间）。为此，epoll 应用而生，epoll 就是为处理大并发而准备的（通过事件机制监听文件描述符），一般常常在网络编程中使用 epoll。
+  - epoll 更多的是用在大规模的并发服务器上，当涉及到的文件描述符数量比较少时适用 select 和 poll。
+  - 使用：
+    1. 应用程序需要先使用 `epoll_create()` 创建一个 epoll 句柄：
+      ```c
+      /* 
+         * @size: 从 Linux 2.6.8 开始此参数就没有意义了，随便填写一个大于 0 的值就可以 
+         * @return: epoll 句柄，如果为 -1 就表示创建失败。
+         */
+      int epoll_create(int size);
+      ```
+    2. 句柄创建后，通过 `epoll_ctl()` 向其中添加要监视的文件描述符以及监视的事件：
+      ```c
+      /* 
+       * @epfd: 要操作的 epoll 句柄 
+       * @op: 表示要对 epfd 进行的操作
+       * @fd: 要监视的文件描述符
+       * @event: 要监视的事件类型
+       * @return: 0-成功；-1-失败，并设置 errno
+       */
+      int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+
+      // op:
+      EPOLL_CTL_ADD     // 向 epfd 添加文件参数 fd 表示的描述符
+      EPOLL_CTL_MOD     // 修改参数 fd 的 event 事件
+      EPOLL_CTL_DEL     // 从 epfd 中删除 fd 描述符
+
+      // event:
+      struct epoll_event {
+         uint32_t events;        // epoll 事件
+         epoll_data_t data;      // 用户数据
+      }
+
+      // 可选的 epoll 事件：
+      EPOLLIN                    // 有数据可读
+      EPOLLOUT                   // 可写数据
+      EPOLLPRI                   // 有紧急的数据需要读取
+      EPOLLERR                   // 指定的文件描述符发生错误
+      EPOLLHUP                   // 指定的文件描述符挂起
+      EPOLLET                    // 设置 epoll 为边沿触发，默认触发模式为水平触发
+      EPOLLONESHOT               // 一次性的监视，当监视完成后还需要再次监视某个 fd，则需要将 fd 重新添加到 epoll 里面
+      ```
+    3. 设置完成后，通过 `epoll_wait()` 来等待事件的发生：
+      ```c
+      /* 
+       * @epfd: 要等待的 epoll 
+       * @events: 传出参数，调用者可通过此参数判断发生了哪些事件
+       * @maxevents: events 数组大小，必须大于 0
+       * @timeout: 超时时间，单位为 ms
+       * @return: 0-超时；-1-错误；其他值-准备就绪的文件描述符数量
+       */
+      int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout);
+      ```
+
+- `poll`、`select` 以及 `epoll` 的对比
+   - [ ] 三种机制对比
 
 4. 内核 poll 机制详解
-5. `poll`、`select` 以及 `epoll`
 
 ## 异步通知
 **适用场景**：使用“休眠-唤醒”、“POLL 机制”时都需要休眠等待某个事件发生，两者的区别在于后者可以指定休眠的时长。如果 APP 不想休眠，也可以通过异步通知机制使得驱动程序在有数据时主动通知 APP，APP 收到信号后执行处理函数。
@@ -608,9 +1015,23 @@ APP 根据 `poll` 函数的返回值就可以知道是否有数据，如果有�
 
 2. API
    参考 `include/linux/timer.h`
-   - `struct timer_list` 的定义：略；
+   - `struct timer_list` 的定义：
+      ```c
+      struct timer_list {
+         struct list_head entry;
+         unsigned long expires;
+         struct tvec_base *base;
+
+         void (*function)(unsigned long);
+         unsigned long data;
+
+         int slack;
+      }
+      ```
    - `setup_timer(time, fn, data)`：
      - 设置定时器，主要是初始化 `timer_list` 结构体，设置其中的函数、参数；
+   - `void init_timer(struct timer_list *timer)`：
+     - 初始化 `timer_list` 类型变量。当定义了一个 `timer_list` 变量以后一定要先初始化。
    - `void add_timer(struct timer_list *timer)`：
      - 向内核添加定时器。`timer->expires` 表示超时时间；
      - 当超时时间达到，内核就会调用这个函数：`timer->function(timer->data)`；
