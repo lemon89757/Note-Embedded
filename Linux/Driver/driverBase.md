@@ -765,13 +765,43 @@ APP 根据这些函数的返回值就可以知道是否有数据，如果有则�
 1. 信号类型
    参考 `include/uapi/asm-generic/signal.h`
    ```c
-   #define SIGHUP    1
-   #define SIGINT    2
-   #define SIGQUIT   3
-   ...
+   #define SIGHUP    1     // 终端挂起或控制进程终止
+   #define SIGINT    2     // 终端中断（ctrl + c 组合键）
+   #define SIGQUIT   3     // 终端退出（ctrl + \ 组合键）
+   #define SIGILL    4     // 非法指令
+   #define SIGTRAP   5     // debug 使用，有断电指令产生
+   #define SIGABRT   6     // 由 abort(3) 发出的退出指令
+   #define SIGIOT    6     // IOT 指令
+   #define SIGBUS    7     // 总线错误
+   #define SIGFPE    8     // 浮点运算错误
+   #define SIGKILL   9     // 杀死、终止进程
+   #define SIGUSR1   10    // 用户自定义信号 1
+   #define SIGSEGV   11    // 段违例（无效的内存段）
+   #define SIGUSR2   12    // 用户自定义信号 2
+   #define SIGPIPE   13    // 向非读管道写入数据
+   #define SIGALRM   14    // 闹钟
+   #define SIGTERM   15    // 软件终止
+   #define SIGSTKFLT 16    // 栈异常
+   #define SIGCHLD   17    // 子进程结束
+   #define SIGCONT   18    // 进程继续
+   #define SIGSTOP   19    // 停止进程的执行，只是暂停
+   #define SIGTSTP   20    // 停止进程的运行（ctrl + z 组合键）
+   #define SIGTTIN   21    // 后台进程需要从终端读取数据
+   #define SIGTTOU   22    // 后台进程需要向终端写入数据
+   #define SIGURG    23    // 有紧急数据
+   #define SIGXCPU   24    // 超过 CPU 资源限制
+   #define SIGXFSZ   25    // 文件大小超额
+   #define SIGVTALRM 26    // 虚拟时钟信号
+   #define SIGPROF   27    // 时钟信号描述
+   #define SIGWINCH  28    // 窗口大小改变
    #define SIGIO     29    // 驱动常用信号，表示有 I/O 事件
    #define SIGPOLL   SIGIO
+   #define SIGPWR    30    // 断电重启
+   #define SIGSYS    31    // 非法的系统调用
+   #define SIGUNUSED 31    // 未使用信号
    ```
+   - 在上述信号中，除了 `SIGKILL(9)` 和 `SIGSTOP(19)` 这两个信号不能被忽略外，其他的信号都可以忽略。
+   - `kill -9 PID` 就是向指定的进程发送 `SIGKILL` 信号；ctrl + c 组合键就是向当前正在占用终端的应用程序发出 `SIGINT` 信号，`SIGINT` 信号默认的动作是关闭当前应用程序（应用程序调用 `exit(x)`）。
 2. APP 任务
    - 注册信号处理函数
       ```c
@@ -779,6 +809,7 @@ APP 根据这些函数的返回值就可以知道是否有数据，如果有则�
       typedef void (*sighandler_t)(int);     // APP 需要先实现的处理函数类类型
 
       /* 绑定信号 signum 和信号处理函数 hander 以完成注册 */
+      // 设置成功返回信号的前一个处理函数；失败的话返回 SIG_ERR
       sighandler_t signal(int signum, sighandler_t handler);
       ```
    - 打开驱动程序对应的设备节点，并使能驱动程序的异步通知功能；
@@ -798,19 +829,52 @@ APP 根据这些函数的返回值就可以知道是否有数据，如果有则�
       static int drv_fasync(int fd, struct file *filp, int on) {
          return fasync_helper(fd, filp, on, &button_async);
       }
+
+      // fasync 函数原型：
+      int (*fasync)(int fd, struct file *filp, int on);
       ```
-     - `fasync_helper` 函数会分配、构造一个 `fasync_struct` 结构体；
+     - `fasync_helper` 函数会分配、构造一个 `fasync_struct` 结构体：
+         ```c
+         struct fasync_struct {
+            spinlock_t fa_lock;
+            int magic;
+            int fa_fd;
+            struct fasync_struct *fa_next;
+            struct file *fa_file;
+            struct rcu_head fa_rcu;
+         };
+         // 一般将 fasync_struct 结构体指针变量定义到设备结构体中
+
+         // fasync_helper 函数原型：
+         int fasync_helper(int fd, struct file *filp, int on, struct fasync_struct **fapp);
+         ```
      - 驱动文件的 `flag` 的 `FASYNC` 被置位时：`button_async->fa_file = filp`；
      - 驱动文件的 `flag` 的 `FASYNC` 被清空时 `button_async->fa_file = NULL`；
      - 想要发送信号时，使用 `button_async` 作为参数就可以，它里面**可能**含有 `PID`；
    - 在合适的时机发信号：
       ```c
       // 示例在 GPIO 的中断服务程序中发送信号
-      kill_fasync(&button_async, SIGIO, POLL_IN);
+      if (button_async)
+         kill_fasync(&button_async, SIGIO, POLL_IN);
+      // 函数原型：
+      // band: 可读时设置为 POLL_IN，可写时设置为 POLL_OUT
+      void kill_fasync(struct fasync_struct **fp, int sig, int band);
       ```
       - `button_async->fa_file` 非空时，可以从中获取 `PID`，表示发送给哪一个 APP；
       - `SIGIO`：信号类型；
       - `POLL_IN`：信号值（APP 用不到这个参数）；
+   - 在关闭驱动文件的时候释放 `fasync_struct`：
+      ```c
+      static int xxx_release(struct inode *inode, struct file *filp) {
+         return xxx_fasync(-1, filp, 0);     // 驱动设置的 fasync 函数，删除异步通知，释放 fasync_struct。
+      }
+
+      static struct file_operations xxx_ops = {
+         ...
+         .release = xxx_release,
+         ...
+      }
+      ```
 6. 应用程序使用
    - 编写信号处理函数：
       ```c
