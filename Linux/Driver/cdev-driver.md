@@ -214,10 +214,15 @@ MODULE_AUTHOR("xxx");
 ### 新版本
 1. 向内核申请（注册）设备号
     ```c
+    // fs/char_dev.c
     // 没有设备号，这里 dev_t 为传出参数
+    // return: Return zero or a negative error code.
     int alloc_chrdev_region(dev_t *dev, unsigned baseminor, unsigned count, const char *name);
+    
+    // fs/char_dev.c
     // 已有设备号，这里 dev_t 为传入参数
     // 通过宏 `MKDEV(ma, mi)` 来得到设备号；
+    // return: Return value is zero on success, a negative error code on failure.
     int register_chrdev_region(dev_t from, unsigned count, const char *name);
     ```
 2. 向内核注册字符设备：
@@ -239,6 +244,8 @@ MODULE_AUTHOR("xxx");
         ```
    3. 向内核添加 `cdev`：建立字符设备和设备号的关联等
         ```c
+        // fs/char_dev.c
+        // return: A negative error code is returned on failure. 0 on success.
         int cdev_add(struct cdev *p, dev_t dev, unsigned count);
         ```
 3. 创建设备节点：
@@ -295,30 +302,38 @@ static int xxx_release(struct inode *inode, struct file *filp) {...}
 static struct file_operations xxx_fops = {.onwer = THIS_MODULE, ...};
 
 static int __init xxx_init(void) {
+    int ret;
     ... // 设备相关准备工作
 
     // 注册字符设备驱动
     // 1. 设备号
     if (xxxdev.major) {
         xxxdev.devid = MKDEV(xxxdev.major, 0);
-        register_chrdev_region(xxxdev.devid, DEVICE_COUNT, "xxx");
+        ret = register_chrdev_region(xxxdev.devid, DEVICE_COUNT, "xxx");
     } else {
-        alloc_chrdev_region(&xxxdev.devid, 0, DEVICE_COUNT, "xxx");
+        ret = alloc_chrdev_region(&xxxdev.devid, 0, DEVICE_COUNT, "xxx");
         xxxdev.major = MAJOR(devid);
         xxxdev.minor = MINOR(devid);
+    }
+    if (ret < 0) {
+        // ... 错误处理
+        return ret;
     }
     // 2. 注册
     xxxdev.cdev.onwer = THIS_MODULE;
     cdev_init(&xxxdev.cdev, &xxx_fops);
-    cdev_add(&xxxdev.cdev, xxxdev.devid, DEVICE_COUNT);
+    ret = cdev_add(&xxxdev.cdev, xxxdev.devid, DEVICE_COUNT);
+    if (ret < 0) {
+        // ... 错误处理
+    }
     // 3. 创建设备节点
     xxxdev.class = class_create(THIS_MODULE, "xxx");
     if (IS_ERR(xxxdev.class)) {
-        return PTR_ERR(xxxdev.class);
+        // ... 错误处理
     }
     xxxdev.device = device_create(xxxdev.class, NULL, xxxdev.devid, NULL, "xxx");
     if (IS_ERR(xxxdev.device)) {
-        return PTR_ERR(xxxdev.device);
+        // ... 错误处理
     }
 
     return 0;
