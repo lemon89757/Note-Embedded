@@ -24,15 +24,88 @@ struct regmap {
 };
 
 // include/linux/regmap.h
-// read_flag_mask 和 write_flag_mask 寄存器地址相关的掩码
-// 注意检查 spi 和 i2c 对于这两个掩码的默认设置是否符合要求
+/**
+ * Configuration for the register map of a device. 
+ * @name: Optional name of the regmap. Useful when a device has multiple register regions.
+ * @reg_bits: Number of bits in a register address, mandatory（强制的）.
+ * @reg_stride: 步伐，步幅。The register address stride. Valid register address are a multiple of this value. If set to 0, a value of 1 will be used.
+ * @pad_bits: Number of bits of padding between register and value.
+ * @val_bits: Number of bits in a register value, mandatory.
+ * @writeable_reg: Optional callback returning true if the register can be written to. If this field is NULL but wr_table is not, the check is performed on such table (a register is writeable if it belongs to one of the specified by wr_able).
+ * @readable_reg: Optional callback returning true if the register can be read from. ...
+ * @volatile_reg: Optional callback returning true if the register value can't be cached. ...
+ * @precious_reg: Optioanl callback returning true if the register should not be read outside of a call from the driver (e.g., a clear on read interrupt status register). ...
+ * @lock: Optional lock callback (overrides regmap's default lock function, based on spinlock or mutex).
+ * @unlock: As above for unlocking.
+ * @lock_arg: this field is passed as the only argument of lock/unlock functions (ignored in case regular lock/unlock functions are not overridden).
+ * @reg_read: Optional callback that if filled will be used to perform all the reads from the registers. Should only be provided for devices whose read operation cannot be represented as a simple read operation on a bus such as SPI, I2C, etc. Most of devices do not need this.
+ * @reg_write: Same as above for writing.
+ * @fast_io: Register IO is fast. Use a spinlock instead of a mutex to perform locking. This field is ignored if custom lock/unlock functions are used. This field is a duplicate of a similar file in 'struct regmap_bus' and serves exact same purpose. Use it only for "no-bus" cases.
+ * @max_register: Optional, specifies the maximum valid register index.
+ * @wr_table: Optional, points to a struct regmap_access_table specifying valid ranges for write access.
+ * @rd_table: As above, for read access.
+ * @volatile_table: As above, for volatile registers.
+ * @precious_table: As above, for precious registers.
+ * @reg_defaults: Power on reset values for registers (for use with register cache support).
+ * @num_reg_defaults: Number of elements in reg_defaults.
+ * @read_flag_mask: Mask to be set in the top byte of the register when doing a read.
+ * @write_flag_mask: Mask to be set in the top byte of the register when doing a write. If both read_flag_mask and write_flag_mask are empty the regmap_bus default masks are used.
+ * @use_single_rw: If set, converts the bulk read and write operations into a series of single read and write operations. This is useful for device that does not support bulk read and write.
+ * @can_multi_write: If set, the device supports the multi write mode of bulk write operations, if clear multi write requests will be split into individual write operations.
+ * @cache_type: the actual cache type.
+ * @reg_defaults_raw: Power on reset values for registers (for use register cache support).
+ * @num_reg_defaults_raw: Number of elements in reg_defaults_raw.
+ * @reg_format_endian: Endianness for formatted register address. If this is DEFAULT, the @reg_format_endian_default value from the regmap bus is used.
+ * @val_fromat_endian: Endianness for formatted register value. ...
+ * @ranges: Array of configuration entries for virtual address ranges.
+ * @num_ranges: Number of range configuration entries.
+ */
 struct regmap_config {
-    //...
+    const char *name;
+    int reg_bits;
+    int reg_stride;
+    int pad_bits;
+    int val_bits;
+
+    bool (*writeable_reg)(struct device *dev, unsigned int reg);
+    bool (*readalbe_reg)(struct device *dev, unsigned int reg);
+    bool (*volatile_reg)(struct device *dev, unsigned int reg);
+    bool (*precious_reg)(struct device *dev, unsigned int reg);
+    regmap_lock lock;
+    regmap_unlock unlock;
+    void *lock_arg;
+
+    int (*reg_read)(void *context, unsigned int reg, unsigned int *val);
+    int (*reg_write)(void *context, unsigned int reg, unsigned int val);
+
+    bool fast_io;
+
+    unsigned int max_register;
+    const struct regmap_access_table *wr_table;
+    const struct regmap_access_table *rd_table;
+    const struct regmap_access_table *volatile_table;
+    const struct regmap_access_table *precious_table;
+    const struct reg_default *reg_default;
+    unsigned int num_reg_default;
+    enum regcache_type cache_type;
+    const void *reg_default_raw;
+    unsigned int num_reg_defaults_raw;
+
+    u8 read_flag_mask;
+    u8 write_flag_mask;
+
+    bool use_signle_rw;
+    bool can_multi_write;
+
+    enum regmap_endian reg_format_endian;
+    enum regmap_endian val_format_endian;
+
+    const struct regmap_range_cfg *ranges;
+    unsigned int num_ranges;
 };
 
 // Regmap 的申请与初始化
 // 对 regmap_init() 函数的进一步封装
-// 一般在 probe 函数中初始化 regmap_config，然后申请并初始化 regmap
 /* 
  * spi: 需要使用 regmap 的 spi_device 
  */
@@ -48,26 +121,66 @@ static inline struct regmap *devm_regmap_init_mmio(struct device *dev, void __io
 
 // Regmap 的释放
 void regmap_exit(struct regmap *map);
+```
+- 驱动需要先分配一个具体的 `regmap` 结构体，并通过 `regmap_config` 来完成初始化；
+  - 一般在 `probe` 函数中初始化 `regmap_config`，然后申请并初始化 regmap；
+  - 在退出驱动时释放申请到的 `regmap`；
+- 对于 `regmap`，`read_flag_mask` 和 `write_flag_mask` 是寄存器地址相关的掩码，注意检查 spi 和 i2c 对于这两个掩码的默认设置是否符合要求；
+- `regmap_config`：
+  - `precious_reg`：当寄存器值不能被读出来的时候此回调函数会被调用，比如很多中断状态寄存器读清零，读这些寄存器就可以清除中断标志位，但是并没有读出这些寄存器内部的值。
+  - `reg_defaults`：为 `reg_default` 结构体类型，包含两个成员变量：reg 和 def，reg 为寄存器地址，def 是默认值。
 
-// 寄存器访问
-// 统一的访问接口
+```c
+// 寄存器访问，统一的访问接口
+
+// 返回值：0-成功；其他值-失败
 int regmap_read(struct regmap *map, unsigned int reg, unsigned int *val);
 int regmap_write(struct regmap *map, unsigned int reg, unsigned int val);
 /* 
  * 修改寄存器指定的 bit 
  * mask: 需要更新的位必须在掩码中设置为 1
+ * 返回值：0-成功；其他值-失败
  */
 int regmap_update_bits(struct regmap *map, unsigned int reg, unsigned int mask, unsigned int val);
 /* 
  * 读取多个寄存器的值 
  * val_count: 要读取的寄存器数量
+ * 返回值：0-成功；其他值-失败
  */
 int regmap_bulk_read(struct regmap *map, unsigned int reg, void *val, size_t val_count);
 // 同上
 int regmap_bulk_write(struct regmap *map, unsigned int reg, const void *val, size_t val_count);
 ```
 
+### 源码阅读
+```c
+// regmap-spi.c
+static struct regmap_bus regmap_spi = {
+    .write = regmap_spi_write,
+    ...
+    .read_flag_mask = 0x80,
+    .reg_format_endian_default = REGMAP_ENDIAN_BIG,
+    .val_format_endian_default = REGMAP_ENDIAN_BIG,
+};
+
+struct regmap *regmap_init_spi(struct spi_device *spi, const struct regmap_config *config) {
+    return regmap_init(&spi->dev, &regmap_spi, &spi->dev, config);
+}
+
+// 在 regmap_init 有如下代码：
+if (config->read_flag_mask || config->write_flag_mask) {
+    map->read_flag_mask = config->read_flag_mask;
+    map->write_flag_mask = config->write_flag_mask;
+} else if (bus) {
+    map->read_flag_mask = bus->read_flag_mask;
+}
+```
+- 当 `regmap_config` 中没有设置 `read_flag_mask` 和 `write_flag_mask` 时，使用 `regmap_spi (regmap_bus)` 上设置的 `read_flag_mask (0x80)`。因此，当使用的 spi 设备不需要读掩码时，在初始化 `regmap_config` 的时候将 `read_flag_mask` 显式设置为 0x00。
+
 ### 示例代码
+当使用 spi 读取 icm20608 寄存器的时候，地址最高位必须设置为 1；写内部寄存器的时候，地址最高位要设置为 0。
+
+在使用 regmap 的时候不需要手动将寄存器地址的 bit7 置 1，在初始化 `regmap_config` 的时候直接将 `read_flag_mask` 设置为 0x80 即可，这样通过 regmap 读取 spi 内部寄存器的时候就会将寄存器地址与 `read_flag_mask` 进行或运算，结果就是将 bit7 置 1。它们由 regmap 框架来完成。
 ```c
 // regmap 框架的核心就是 regmap 和 regmap_config 结构体，一般都是在自定义的设备结构体里面添加这两个类型的成员变量
 struct icm20608_dev {
