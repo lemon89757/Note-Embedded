@@ -103,3 +103,12 @@
    2. [Ubuntu 24.04.2 LTS Linux内核6.8降级更换内核版本（以5.19.0为例）](https://blog.csdn.net/m0_55983825/article/details/149669450)
    3. [ubuntu降低你使用的内核到指定版本](https://developer.aliyun.com/article/1114822)
    4. [LINUX开发板Loading: *** ERROR: Cannot mount T T T T T T T T T T T T T T问题解决](https://blog.csdn.net/qq_41470735/article/details/130447381)
+
+## 分区管理
+使用 `gparted` 调整 ubuntu 下的分区大小、调整根目录、家目录大小...
+参考：[【Ubuntu】压缩根目录/空间给home目录扩容](https://zhuanlan.zhihu.com/p/695100294)、[gparted 官网](https://gparted.org/)、[通过 ubuntu 启动盘的方式修改-拯救者会出现黑屏现象，无法使用，仅参考](https://blog.csdn.net/HeLoZhaoFei/article/details/123724956)：
+- 直接制作 `gparted` 启动盘；
+- 通过 bios 设置启动 `gparted live` 系统；
+- 使用默认设置进入配置界面，选择需要编辑的硬盘，并调整相应的分区大小；
+- 调整完成点击界面上的绿色勾按钮，等待分区调整任务完成；
+- 分区完成后，点击界面左上角的 `gparted` 并退出、重启即可。
