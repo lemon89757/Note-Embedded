@@ -1815,4 +1815,571 @@ mutex_unlock(&lock);
 ### RCU
 `RCU, Read Copy Update`
 - 参考：
-  1. [Linux 内核-RCU 概念](https://docs.linuxkernel.org.cn/RCU/rcu.html)
+  1. [Linux 内核-RCU 概念](https://docs.linuxkernel.org.cn/RCU/index.html)
+  2. [Linux 内核：RCU 机制与使用](https://www.cnblogs.com/schips/p/linux_cru.html)
+  3. `Documentation/RCU/*`
+
+   > [2]: RCU(Read-Copy Update)，是 Linux 中比较重要的一种同步机制。顾名思义就是“读，拷贝更新”，再直白点就是“随意读，但更新数据的时候，需要先复制一份副本，在副本上完成修改，再一次性地替换旧数据”。这是 Linux 内核实现的一种针对“读多写少”的共享数据的同步机制。
+   > [2]: Linux 内核源码当中，关于 RCU 的文档比较齐全，可以在 `Documentation/RCU/` 目录下找到这些文件。Paul E. McKenney 是内核中RCU源码的主要实现者，他也写了很多RCU方面的文章。他把这些文章和一些关于RCU的论文的链接整理到了一起：http://www2.rdrop.com/users/paulmck/RCU/
+   > [2]: 在 RCU 实现过程中：
+   >  - 在读取过程中，另外一个线程删除了一个节点。删除线程可以把这个节点从链表中移除，但它不能直接销毁这个节点，**必须等到所有的读取线程读取完成以后，才进行销毁操作**。RCU 中把这个过程称为宽限期（**Grace period**）。
+   >  - 在读取过程中，另外一个线程插入了一个新节点，而读线程读到了这个节点，那么需要保证读到的这个节点是完整的。这里涉及到发布-订阅机制（**Publish-Subscribe Mechanism**）。
+   >  - **保证读取链表的完整性**。新增或者删除一个节点，不至于导致遍历一个链表从中断断开。但是 **RCU 并不保证一定能读到新增的节点或者不读到要被删除的节点**。
+   > [2]: 对于被 RCU 保护的共享数据结构，读者不需要获得任何锁就可以访问它，但写者在访问它时首先拷贝一个副本，然后对副本进行修改，最后使用一个回调（callback）机制在适当的时机把指向原来数据的指针重新指向新的被修改的数据。
+   
+   > [2]: RCU 原理
+   >  - RCU 实际上是一种改进的 rwlock，**读者几乎没有什么同步开销，它不需要锁，不使用原子指令，而且在除 alpha 的所有架构上也不需要内存栅（Memory Barrier），因此不会导致锁竞争，内存延迟以及流水线停滞。不需要锁也使得使用更容易，因为死锁问题就不需要考虑了。写者的同步开销较大，它需要延迟数据结构的释放，复制被修改的数据结构，它也必须使用某种机制同步并行的其他写者的修改操作**。
+   >  - 读者必须提供一个信号给写者，以便写者能够确定数据可以被安全地释放或修改的时机。有一个专门的垃圾收集器来探测读者的信号，一旦所有的读者都已经发送信号告知它们都不在使用被 RCU 保护的数据结构，垃圾收集器就调用回调函数完成最后的数据结构释放或修改操作。
+   >  - RCU 与 rwlock 的不同之处是：它既允许多个读者同时访问被保护的数据，又允许多个读者和多个写者同时访问被保护的数据（注意：是否可以有多个写者并行访问取决于写者之间使用的同步机制），读者没有任何同步开销，而写者的同步开销则取决于使用的写者间同步机制。**但 RCU 不能替代 rwlock，因为如果写比较多时，对读者的性能提高不能弥补写者导致的损失**。
+   >  - **读者在访问被 RCU 保护的共享数据期间不能被阻塞，这是 RCU 机制得以实现的一个基本前提，也就是说，当读者在引用被 RCU 保护的共享数据期间，读者所在的 CPU 不能发生上下文切换**，spinlock 和 rwlock 都需要这样的前提。写者在访问被 RCU 保护的共享数据时不需要和读者竞争任何锁，只有在有多于一个写者的情况下需要获得某种锁以与其他写者同步。
+   >  - 写者修改数据前首先拷贝一个被修改元素的副本，然后在副本上进行修改，**修改完毕后它向垃圾回收器注册一个回调函数以便在适当的时机执行真正的修改操作**。等待适当时机的这一时期称为 grace period，而**CPU 发生了上下文切换称为经历一个 quiescent state，grace period 就是所有所有 CPU 都经历一次 quiescent state 所需要的等待时间**。**垃圾收集器就是在 grace period 之后调用写者注册的回调函数来完成真正的数据修改或数据释放操作的**。
+   >  - 要想使用好 RCU，就要知道 RCU 的实现原理。以 Linux 2.6.21 kernel 的实现开始分析（因为这个版本的实现相对较为单纯，也比较简单。之后内核做了不少改进，如抢占 RCU、可睡眠 RCU、分层 RCU，但是基本思想都是类似的。）
+   >  - 上述 “适当的时机” 就是所有 CPU 经历了一次进程切换（也就是一个 grace period）。**因为 RCU 读者的实现就是关抢占执行读取，读完了当然就可以进程切换了，也就等于是写者可以操作临界区了**。那么就自然可以想到，内核会设计两个元素，来分别表示写者被挂起的起始点，以及每 CPU 变量，来表示该 CPU 是否经过了一次进程切换（quiescent state）。就是说，当写者被挂起后，重置每 CPU 变量，值为 0；当某个 CPU 经历一次进程切换后，就将自己的变量设为 1；当所有的 CPU 变量都为 1 后，就可以唤醒写者了。
+
+1. 简介
+   - 一种同步机制，专门为**读取较多**的情况进行了优化；
+2. 使用
+   > [2]、[3]-whatisRCU.txt:
+   - RCU 的核心 API
+     - 核心 RCU API 非常小。RCU API 还有许多其他成员，但其余成员可以用这 5 个来表示，尽管大多数实现而是用 `call_rcu()` 回调 API 来表示 `synchronize_rcu()`。
+       1. `rcu_read_lock()`
+       2. `rcu_read_unlock()`
+       3. `synchronize_rcu()/call_rcu()`
+       4. `rcu_assign_pointer()`
+       5. `rcu_dereference()`
+     - `rcu_read_lock()`：
+       - `void rcu_read_lock(void)`。
+       - 读取器使用此时间原语来通知回收器该读取器正在进入 RCU 读取端临界区。**在 RCU 读取端临界区中阻塞是非法的**，尽管使用 `CONFIG_PREEMPT_RCU` 构建的内核可以抢占 RCU 读取端临界区。**在 RCU 读取端临界区期间访问的任何受 RCU 保护的数据结构都保证在该临界区的整个持续时间内保持未回收**。引用计数可以与 RCU 结合使用，以维护对数据结构的长期引用。
+       - [ ] 请注意，任何禁用 bottom halves、抢占或中断的操作也会进入 RCU 读取端临界区。获取自旋锁也会进入 RCU 读取端临界区，即使对于不禁用抢占的自旋锁也是如此，如使用 `CONFIG_PREEMPT_RT=y` 构建的内核中的情况。`Sleeplocks` 不进入 RCU 读取端临界区。
+     - `rcu_read_unlock()`
+       - `void rcu_read_unlock(void)`。
+       - 读取器使用此时间原语来通知回收器该读取器正在退出 RCU 读取端临界区。任何启用 bottom halves、抢占或中断的操作也会退出 RCU 读取端临界区。释放自旋锁也会退出 RCU 读取端临界区。
+       - 请注意，RCU 读取端临界区可以嵌套和/或重叠。
+     - `synchronize_rcu()`
+       - `void synchronize_rcu(void)`。
+       - **此时间原语标记更新器代码的结尾和回收器代码的开始**。它通过**阻塞**直到所有 CPU 上所有**先前**存在的 RCU 读取端临界区都已完成来实现此目的。
+       - 请注意，**`synchronize_rcu()` 不一定等待任何后续的 RCU 读取端临界区完成**。例如，考虑以下事件序列：
+         ```txt
+                  CPU 0                  CPU 1                 CPU 2
+            ----------------- ------------------------- ---------------
+         1.  rcu_read_lock()
+         2.                    enters synchronize_rcu()
+         3.                                               rcu_read_lock()
+         4.  rcu_read_unlock()
+         5.                     exits synchronize_rcu()
+         6.                                              rcu_read_unlock()
+         ```
+       - 重申一下，**`synchronize_rcu()` 仅等待正在进行的 RCU 读取端临界区完成，不一定等待在调用 `synchronize_rcu()` 之后开始的任何临界区**。
+       - 当然，**`synchronize_rcu()` 不一定在最后一个先前存在的 RCU 读取端临界区完成后立即返回**。一方面，可能会有调度延迟。另一方面，许多 RCU 实现会批量处理请求以提高效率，这可能会进一步延迟 `synchronize_rcu()`。
+       - 由于 `synchronize_rcu()` 是必须确定读取器何时完成的 API，因此**其实现是 RCU 的关键**。为了使 RCU 在除了读取密集型情况之外的所有情况中都有用，`synchronize_ruc()` 的开销必须非常小。
+       - `call_rcu()` API 是 `synchronize_rcu()` 的异步回调形式，它不是阻塞，而是注册一个函数和参数，在所有正在进行的 RCU 读取段临界区完成后调用。这种回调变体在无法阻塞或更新端性能至关重要的情况下特别有用。但是，不应轻易使用 `call_rcu()` API，因为使用 `synchronize_rcu()` API 通常会导致更简单的代码。此外，`synchronize_rcu()` API 具有自动限制更新速率的良好特性，以防止宽限期延迟。
+     - `rcu_assign_pointer()`
+       - `void rcu_assgin_pointer(p, typeof(p) v)`。
+       - `rcu_assgin_pinter()` **是作为宏实现的**。
+       - 更新器使用此空间宏为受 RCU 保护的指针分配一个新值，以便安全地将值的更改从更新器传达给读取器。这是一个空间（而不是时间）宏。
+       - 也许同样重要的是，`rcu_assign_pointer()` 用于**记录哪些指针受 RCU 保护，以及给定结构变得可供其他 CPU 访问的点**。也就是说，`rcu_assign_pointer()` 最常间接使用，通过 `_rcu` 列表操作原语，例如 `list_add_rcu()`。
+     - `rcu_dereference()`
+       - `typeof(p) ruc_dereference(p)`。
+       - 与 `rcu_assign_pointer()` 一样，`rcu_dereference()` 必须作为宏实现。
+       - 读取器使用空间 `rcu_dereference()` 宏来获取受 RCU 保护的指针，该指针返回一个可以安全地取消引的地值。请注意，**`rcu_dereference()` 实际上并不取消引用指针，而是保护指针以供以后取消引用。它还执行给定 CPU 架构所需的任何内存屏障指令**。目前，只有在 Alpha 需要在 `rcu_deference()` 中使用内存屏障，在其他 CPU 上，它会编译为易失性加载。
+       - 常见的编码实践使用 `rcu_deference()` 将受 RCU 保护的指针复制到局部变量，然后取消引用此局部变量：
+         ```c
+         p = rcu_dereference(head.next);
+         return p->data;
+         // 在这种情况下，可以将这些组合成一个语句：
+         return rcu_dereference(head.next)->data;
+         ```
+       - **如果要从受 RCU 保护的结构中获取多个字段，则当然首选使用局部变量**。重复的 `rcu_dereference()` 调用看起来很丑陋，**不能保证如果在临界区中发生更新会返回相同的指针**，并且在 Alpha CPU 上产生不必要的开销。
+       - 请注意，**`rcu_dereference()` 返回的值仅在封闭的 RCU 读取端临界区中有效**。例如，以下代码不是合法的：
+         ```c
+         rcu_read_lock();
+         p = rcu_dereference(head.next);
+         ruc_read_unlock();
+         x = p->address;   /* bug */
+         rcu_read_lock();
+         y = p->data;      /* bug */
+         rcu_read_unlock();
+         ```
+         将一个 RCU 读取端临界区的引用保持到另一个临界区是非法的，就像将一个基于锁的临界区的引用保持到另一个临界区一样！同样，在获取引用的临界区之外使用引用也是非法的，就像使用普通锁一样。
+       - 与 `rcu_assign_pointer()` 一样，**`rcu_dereference()` 的一个重要功能是记录哪些指针受 RCU 保护**，特别是标记一个随时可能更改的指针，包括在 `rcu_dereference()` 之后立即更改。并且，**与 `rcu_assign_pointer()` 再次一样，`rcu_dereference()` 通常是间接使用**，通过 `_rcu` 列表操作原语，例如 `list_for_each_entry_rcu()`。
+   - 核心 RCU API 的一些示例用法
+      ```c
+      struct foo {
+         int a;
+         char b;
+         long c;
+      };
+
+      DEFINE_SPINLOCK(foo_mutex);
+
+      struct foo *gbl_foo;
+
+      /* Create a new struct foo that is the same as the one 
+      * currently pointed to by gbl_foo, except that field "a"
+      * is replaced with "new_a". Points gbl_foo to the new 
+      * structure, and frees up the old structure after a grace period.
+      *
+      * Uses rcu_assign_pointer() to ensure that concurrent
+      * readers see the initialized version of the new structure.
+      *
+      * Uses synchronize_rcu() to ensure that any readers that
+      * might have references to the old structure complete before
+      * freeing the old structure. 
+      */
+      void foo_update_a(int new_a) {
+         struct foo *new_fp;
+         struct foo *old_fp;
+
+         new_fp = kmalloc(sizeof(*new_fp), GFP_KERNEL);
+         spin_lock(&foo_mutex);
+         old_fp = gbl_foo;
+         *new_fp = *old_fp;
+         new_fp->a = new_a;
+         rcu_assign_pointer(gbl_foo, new_fp);
+         spin_unlock(&foo_mutex);
+         synchronize_rcu();
+         kfree(old_fp);
+      }
+
+      /* Return the value of field "a" of the current gbl_foo 
+      * structure. Use rcu_read_lock() and rcu_read_unlock() 
+      * to ensure that the structure does not get deleted out
+      * from under us, and use rcu_dereference() to ensure that
+      * we see the initialized version of the structure (important
+      * for DEC Alpha and for people reading the code).
+      */
+      int foo_get_a(void) {
+         int retval;
+
+         rcu_read_lock();
+         retval = rcu_dereference(gbl_foo)->a;
+         rcu_read_unlock();
+         return retval;
+      }
+      ```
+      - 在 `rcu_assign_pointer()` 之后的其他线程将会看到新的 `gbl_foo` 数据，而此时可能还存在这之前对 `gbl_foo` 的读者引用，因此需要等到 `synchronize_rcu()` 后才能释放旧的 `gbl_foo`。持有的自旋锁在赋值操作之后即可被释放，而同步操作可能会导致当前线程的休眠？
+      - [ ] `rcu_read_lock()` 和 `rcu_read_unlock()` 是怎样确保共享资源不会在还有读者的情况下被释放的呢？还是说这两个语句只是确保了读者的不可抢占的上下文，正真让 RCU 机制意识到不能提前释放资源的是这个语句之间的读操作？
+      - 总结来说：
+      - 使用 `rcu_read_lock()` 和 `rcu_read_unlock()` 来保护 RCU 读者的关键代码区；
+      - 在 RCU 读者的关键代码区，使用 `rcu_dereference()` 来解引用受 RCU 保护的指针；
+      - 使用可靠的机制（例如 locks 或者 semaphores ）来防止并发更新间的相互干扰；
+      - 使用 `rcu_assign_pointer()` 来更新受 RCU 保护的指针，这个原语（primitive）保护并发读者免受写者的干扰，但 `rcu_assign_pointer()` 并不保护并发写者间的干扰。因此，你还是需要使用锁（或者类似的其他东西）来保护并发的 `rcu_assign_pointer()` 原语，以避免并发读者间的相互干扰。
+      - 在将数据从受 RCU 保护的数据结构中移除后，但在重新声明或释放数据之前，使用 `synchronize_rcu()`，以等待所有 RCU 读者的关键代码区的完成，因为它们可能会引用到这部分数据。
+      - See checklist.txt for additional rules to follow when using RCU. And again, more-typical uses of RCU may be found in listRCU.txt, arrayRCU.txt, and NMI-RCU.txt.
+
+### 完成量 completion
+- 参考：
+  1. [Linux 内核文档-Completions - “等待完成” 屏障 API](https://docs.linuxkernel.org.cn/scheduler/completion.html)
+  2. [Linux 同步机制-completion](https://www.cnblogs.com/zyly/p/17810463.html#_label0)
+  3. [内核同步-Linux 内核同步机制之 completion](https://www.cnblogs.com/aaronLinux/p/5904493.html)
+
+1. 简介
+   - 是一种代码同步机制，优于任何对锁/信号量和忙循环的滥用。
+   - 如果有一个或多个线程必须等待某些内核活动达到某个点或特定状态，那么 completion 可以为此问题提供一个无竞争的解决方案。
+   - 使用 completion 的优点是它们具有明确定义的、集中目的的，这使得很容易看到代码的意图，而且它们还可以**生成更高效的代码**，因为所有线程都可以继续执行，直到实际需要结果，并且等待和信号发送都非常高效，使用低级调度程序睡眠/唤醒工具。
+   - completion **构建于 Linux 调度的 waitqueue 和 wakeup 基础设施之上**。
+   - 由于 completion **与调度相关，因此可以在 `kernel/sched/completion.c` 中找到代码**。
+2. 用法
+   - `struct completion` 同步对象的初始化。
+   - 通过调用 `wait_for_completion()` 或其变体进行的等待部分。
+   - 通过调用 `complete()` 或 `complete_all()` 进行的信号发送部分。
+
+   还有一些辅助函数用于检查 completion 的状态。请注意，**初始化必须首先发生，但等待和信号发送部分可以按任何顺序发生**。也就是说，一个线程在另一个线程检查是否必须等待 completion 之前，已经将 completion 标记为 “done” 是完成正常的。
+
+   要使用 completion，需要 `#include <linux/completion.h>` 并创建类型为 `struct completion` 的静态或动态变量，该变量只有两个字段：
+   ```c
+   struct completion {
+      unsigned int done;
+      struct swait_queue_head wait;
+   };
+   ```
+   **`wait` 字段用于放置等待任务（如果有），以及 `done` 字段表示 completion 标志，用于指示它是否已完成**。
+
+   **completion 应该被命名为引用正在同步的事件**。一个好的例子是：
+   ```c
+   wait_for_completion(&early_console_added);
+   complete(&early_console_added);
+   ```
+   良好、直观的命名有助于代码的可读性。**将 completion 命名为 “complete” 是没有帮助的，除非目的非常明显**......
+3. 初始化
+   - **动态分配的 completion 对象最好嵌入到数据结构中**，以确保该数据结构在该函数/驱动程序的生命周期内都是有效的，以防止与来自异步 `complete()` 调用的竞争发生。
+   - 当使用 `wait_for_completion()` 的 `_timeout` 或 `_killable()/_interruptible()` 变体时，应特别注意，因为它必须确保在所有相关活动（`complete()` 或 `reinit_completion()`）发生之前，不会发生内存释放，即使这些等待函数由于超时或信号触发而提前返回。
+   - **动态分配的 completion 对象初始化通过调用 `init_completion()` 完成**。在此调用中，初始化 waitqueue 并将 done 设置为 0，即“未完成”。
+     - 重新初始化函数 `reinit_completion()` 只是将 done 字段重置为 0，而不触及 waitqueue。此函数的调用者必须确保没有并行的 `wait_for_completion()` 调用正在进行。
+     - 在同一个 completion 对象上两次调用 `init_completion()` 很可能是一个 bug，因为它会将队列重新初始化为一个空队列，并且排队的任务可能会“丢失”。在这种情况下使用 `reinit_completion()`，但要注意其他竞争。
+   - **对于静态声明和初始化，可以使用宏**：
+      ```c
+      // 文件范围内的静态（或全局）声明：
+      DECLARE_COMPLETION()
+      // 示例：
+      static DECLARE_COMPLETION(setup_done);
+      DECLARE_COMPLETION(setup_done);
+      ```
+      - 注：在这种情况下，completion 在启动时（或模块加载时）初始化为“未完成”，并且不需要 `init_completion()` 调用。
+   - **当 completion 被声明为函数内的局部变量时，初始化应该始终显式使用 `DECLARE_COMPLETION_ONSTACK()`**。
+     - 注意：当使用 completion 对象作为局部变量时，必须敏锐地意识到函数堆栈的生命周期很短：在所有活动（例如等待线程）都已停止并且 completion 对象完全未使用之前，该函数不得返回到调用上下文中。
+     - 再次强调：特别是在使用一些具有更复杂结果的等待 API 变体时，例如超时或信号发送（`_timeout`、`_killable()`、`_interruptible()`）变体，等待可能会提前完成，而该对象可能仍被另一个线程使用，并从 `wait_on_completion*()` 调用者函数返回将释放函数堆栈，如果 `complete()` 在其他线程中完成，则会导致微妙的数据破坏。简单的测试可能不会触发这些类型的竞争。
+     - **如果不确定，请使用动态分配的 completion 对象，最好嵌入到一些其他具有长生命周期的对象中，该对象的生命周期超过任何使用 completion 对象的辅助线程的生命周期，或者具有锁或其他同步机制来确保 `complete()` 不会在释放的对象上调用**。
+4. 等待 completion
+   - 为了使线程等待某些并发活动完成，它会在初始化的 completion 结构上调用 `wait_for_completion()`，一个典型的使用场景是：
+      ```txt
+      CPU#1                                   CPU#2
+
+      struct completion setup_done;
+
+      init_completion(&setup_done);
+      initialize_work(...,&setup_done,...);
+
+      /* run non-dependent code */            /* do setup */
+
+      wait_for_completion(&setup_done);       complete(&setup_done);
+      ```
+      - **这并不意味着 `wait_for_completion()` 和 `complete()` 的调用之间存在任何特定的顺序。如果对 `complete()` 的调用发生在 `wait_for_completion()` 的调用之前，那么等待方将立即继续，因为所有依赖关系都已满足；如果没有，它将阻塞直到 `complete()` 发出信号**。 
+     - 请注意，`wait_for_completion()` 调用 `spin_lock_irq()/spin_unlock_irq()`，因此**只有在知道中断已启用时才能安全地调用它**。从禁用 IRQ 的原子上下文中调用它将导致难以检测的伪造中断启用。
+     - **默认行为是等待并没有超时并将任务标记为不可中断。`wait_for_completion()` 及其变体仅在进程上下文中是安全的（因为它们可以睡眠），但在原子上下文、中断上下文、禁用 IRQ 或禁用抢占的情况下则不安全**。另请参阅 `try_wait_for_completion()` 以处理原子/中断上下文中的 completion。
+   - 由于 `wait_for_completion()` 的所有变体都可能（显然）阻塞很长时间，具体取决于它们正在等待的活动的性质。因此在大多数情况下，您可能不想在持有互斥锁的情况下调用它。
+   - 可用的 `wait_for_completion*()` 变体：**以下变体都返回状态，并且在大多数（/所有）情况下都应检查此状态**（在有意不检查状态的情况下，您可能需要做一个注释来解释这一点，例如 `arch/arm/kernel/smp.c:__cpu_up()`）。
+     - 一个常见的问题是返回值类型的不干净分配，因此请注意将返回值分配给正确类型的变量。
+     - 另外还存在对返回值的特定含义的检查非常不准确，例如：`if (!wait_for_completion_interruptible_timeout(...))`。
+     - `int wait_for_completion_interruptible(struct completion *done)`：在等待时将任务标记为 `TASK_INTERRUPTIBLE`，如果在等待时收到信号，它将返回 `-ERESTARTSYS`，否则为 0。
+     - `unsigned long wait_for_completion_timeout(struct completion *done, unsigned long timeout)`：它将任务标记为 `TASK_UNINTERRUPTIBLE` 并且最多等待 timeout jiffies。如果发生超时，它将返回 0，否则返回剩余时间（以 jiffies 为单位，但至少为 1）。超时最好使用 `msecs_to_jiffies()` 或 `usecs_to_jiffies()` 计算，以使代码在很大程度上与 HZ 无关。如果返回的超时值被有意忽略，则注释可能应该解释原因，例如 `drivers/mfd/wm8350-core.c-wm8350_read_auxadc()`。
+     - `long wait_for_completion_interruptible_timeout(struct completion *done, unsigned long timeout)`：将任务标记为 `TASK_INTERRUPTIBLE`。如果收到信号，返回 `-ERESTARTSYS`；超时，返回 0；否则 completion 发生，返回剩余时间（以 jiffies 为单位）。
+     - `_killable` 变体：使用 `TASK_KILLABLE` 作为指定的任务状态。如果被中断，将返回 `-ERESTARTSYS`，如果实现 completion，则返回 0。还有一个 `_timeout` 变体：
+         ```c
+         long wait_for_completion_killable(struct completion *done);
+         long wait_for_completion_killable_timeout(struct completion *done, unsigned long timeout);
+         ```
+     - `_io` 变体 `wait_for_completin_io()` 的行为与非 `_io` 变体相同，除了将等待时间计为“等待 IO”之外，这对任务在调度/IO 统计信息中的计算方式有影响：
+         ```c
+         void wait_for_completion_io(struct completion *done);
+         unsigned long wait_for_completion_io_timeout(struct completion *done, unsigned long timeout);
+         ```
+5. 信号发送 completion
+   - 向一个等待者发出可以继续的信号：
+      ```c
+      void complete(struct completion *done);
+      ```
+   - 向所有当前和未来的等待者发出信号：
+      ```c
+      void complete_all(struct completion *done);
+      ```
+   - **即使在线程开始等待之前发出 completion 信号，信号发送也会按预期工作。这是通过等待者“消耗”（递减）`struct completion` 的 “done” 字段来实现的。等待线程的唤醒顺序与它们排队的顺序相同（FIFO 顺序）**。
+   - 如果多次调用 `complete()`，那么这将允许该数量的等待着继续。每次调用 `complete()` 都会简单地递增 done 字段。**但是，多次调用 `complete_all()` 是一个 bug**。
+   - **`complete()` 和 `complete_all()` 都可以安全地在 IRQ/原子上下文中调用**。从 IRQ 上下文发送 completion 信号很好，因为它会适当地使用 `spin_lock_irqsave()/spin_unlock_irqrestore()` 进行锁定，并且它永远不会睡眠。
+   - **在任何时候，只能有一个线程在特定的 `struct completion` 上调用 `complete()` 或 `complete_all()`，通过等待队列自旋锁进行序列化**。任何此类对 `complete()` 或 `complete_all()` 的并发调用都可能是一个设计 bug。
+6. `try_wait_for_completion()/completion_done()`
+   - `bool try_wait_for_completion(struct completion *done)`：该函数不会将线程放入等待队列，而是返回 false，如果需要将线程排队（阻塞），否则它会消耗一个已发布的 completion 并返回 true。
+   - `bool completion_done(struct completion *done)`：检查 completion 的状态而不以任何方式改变它。如果有等待者，则返回 false；否则返回 true。
+   - `try_wait_for_completion()` 和 `completion_done()` 都可以安全地在 IRQ 或原子上下文中调用。
+7. 源码阅读
+   ```c
+   // version: 4.1.15
+
+   // 结构体定义
+   // include/linux/completion.h
+   /* struct completion - structure used to maintain state for 
+    * a "complation"
+    *
+    * This is the opaque (不透明的) structure used to maintain the
+    * state for a "completion". Completions currently use a FIFO
+    * to queue threads that have to wait for the "completion" event.
+    *
+    * See also: complete(), wait_for_completion() (and friends
+    * _timeout, _interruptible, _interruptible_timeout, and _killable),
+    * init_completion(), reinit_completion(), and macros DECLARE_COMPLETION(),
+    * DECLARE_COMPLETION_ONSTACK().
+    */
+   struct completion {
+      unsigned int done;
+      wait_queue_head_t wait;
+   }
+
+   // 初始化
+   // include/linux/completion.h
+   /**
+    * init_completion - Initialize a dynamically allocated completion 
+    * @x: pointer to completion structure that is to be initialized
+    *
+    * This inline function will initialize a dynamically created
+    * completion structure.
+    */
+   static inline void init_completion(struct completion *x) {
+      x->done = 0;
+      init_waitqueue_head(&x->wait);
+   }
+
+   /* This is especially important after complete_all() is used */
+   static inline void reinit_completion(struct completion *x) {
+      x->done = 0;
+   }
+
+   // 等待完成量
+   // kernel/sched/completion.c
+   static inline long __sched do_wait_for_common(struct completion *x, 
+      long (*action)(long), long timeout, int state) {
+      if (!x->done) {
+         DECLARE_WAITQUEUE(wait, current);
+         __add_wait_queue_tail_exclusive(&x->wait, &wait);
+         do {
+            if (signal_pending_state(state, current)) {
+               timeout = -ERESTARTSYS;
+               break;
+            }
+            __set_current_state(state);
+            spin_unlock_irq(&x->wait.lock);
+            timeout = action(timeout);
+            spin_lock_irq(&x->wait.lock);
+         } while (!x->done && timeout);
+         __remove_wait_queue(&x->wait, &wait);
+         if (!x->done)
+            return timeout;
+      }
+      x->done--;
+      return timeout ?: 1;
+   }
+
+   // 通知等待该完成量的任务
+   // kernel/sched/completion.c
+   /** 
+    * complete - signals a single thread waiting on this 
+    * completion.
+    * @x: holds the state of this particular completion.
+    * 
+    * This will wake up a single thread waiting on this completion.
+    * Threads will be awakened in the same order in which they were
+    * queued.
+    * 
+    * See also complete_all(), wait_for_completion() and related rountines.
+    * 
+    * It may be assumed that this function implies a write memory
+    * barrier before changing the task state if and only if any tasks
+    * are woken up.
+    */
+   void complete(struct completion *x) {
+      unsigned long flags;
+      spin_lock_irqsave(&x->wait.lock, flags);
+      x->done++;
+      __wake_up_locked(&x->wait, TASK_NORMAL, 1);
+      spin_unlock_irqrestore(&x->wait.lock, flags);
+   }
+   EXPORT_SYMBOL(complete);
+
+   void complete_all(struct completion *x) {
+      unsigned long flags;
+      spin_lock_irqsave(&x->wait.lock, flags);
+      x->done += UINT_MAX/2;
+      __wake_up_locked(&x->wait, TASK_NORMAL, 0);
+      spin_unlock_irqrestore(&x->wait.lock, flags);
+   }
+   EXPORT_SYMBOL(complete_all);
+
+   // 检测某个 completion 是否有正在等待的任务
+   // kernel/sched/completion.c
+   /** 
+    * completion_done - Test to see if a completion has any 
+    * waiters.
+    * @x: completion structure
+    * Return: 0 if there are waiters (wait_for_completion() in progress)
+    *         1 if there are no waiters.
+    */
+   bool completion_done(struct completion *x) {
+      if (!READ_ONCE(x->done))
+         return false;
+      /* If ->done, we need to wait for complete() to release
+       * ->wait.lock
+       * otherwise we can end up freeing the completion before
+       * complete() is done referencing it.
+       *
+       * The RMB paris with complete()'s RELEASE of ->wait.lock
+       * and orders the loads of ->done and ->wait.lock such that
+       * we cannot observe the lock before complete() acquires it
+       * while observing the ->done after it's acquired the lock.
+       */
+      smp_rmb();
+      spin_unlock_wait(&x->wait.lock);
+      return true;
+   }
+   EXPORT_SYMBOL(completion_done);
+   ```
+   - `do_wait_for_common()` 是多个等待函数的最终实现，例如：`wait_for_completion() -> wait_for_common() -> __wait_for_common() -> do_wait_for_common()`。
+   - [ ] `might_sleep()` 的宏定义展开什么都没做，那它的作用是什么？
+   - [ ] `__sched`、`__add_wait_queue_tail_exclusive()`、`signal_pending_state()`、`set_current_state()`、`__remove_wait_queue()`
+   - [ ] 完善等待队列的内容和 completion 源码的解读（进程调度...）
+   - [ ] 先 `spin_unlock_irq()` 再 `spin_lock_irq()` 不会有问题吗？就算当前程序并没有持有这个 spinlock ？
+   - [ ] `completion_done()`
+8. 示例程序
+   来源：[2].
+   驱动程序
+   ```c
+   include <...>
+
+   #define DELAY_CMD_0_WRITE    _IOW('A', 0, unsigned int)
+   #define DELAY_CMD_1_READ     _IOW('A', 1, unsigned int)
+   #define ERROR              (-1)
+
+   DEFINE_KFIFO(myfifo, char, 1024);
+
+   dev_t devid;
+   struct cdev hello_cdev;
+   struct class *hello_cls;
+
+   DECLARE_WAIT_QUEUE_HEAD(wq);
+
+   static int hello_open(struct inode *inode, struct file *file) {
+      pr_info("hello_open\n");
+      return 0;
+   }
+
+   static ssize_t hello_write(struct file *filp, const char __user *buf, size_t size, loff_t *offset) {
+      int ret;
+      unsigned int len = 0;
+      pr_info("write");
+      ret = kfifo_from_user(&myfifo, buf, size, &len);
+      if (ret != 0) {
+         pr_err("kfifo_from_user error");
+         return 0;
+      }
+      if (len <= 0)
+         return 0;
+      *offset += len;
+      wake_up(&wq);
+      return len;
+   }
+
+   static ssize_t hello_read(struct file *filp, char __user *buf, size_t count, loff_t *offset) {
+      int ret;
+      unsigned int len = 0;
+      pr_info("read");
+      ret = kfifo_to_user(&myfifo, buf, count, &len);
+      if (len <= 0) 
+         return 0;
+      *offset += len;
+      return len;
+   }
+
+   static int hello_poll(struct file *filp, struct poll_table_struct *table) {
+      int mask = 0;
+      pr_info("hello_poll\n");
+      poll_wait(filp, &wq, table);
+      if (kfifo_is_empty(&myfifo)) {
+
+      } else {
+         mask |= POLLIN | POLLRDNORM;
+      }
+      return mask;
+   }
+
+   int hello_close(struct inode *inode, struct file *filp) {
+      pr_info("hello_close\n");
+      return 0;
+   }
+
+   DECLARE_COMPLETION(mycompletion);
+
+   static long hello_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
+      pr_info("cmd %d\n", cmd);
+      switch(_IOC_NR(cmd)) {
+      case 0: {
+         pr_info("i am waiting\n");
+         wait_for_completion(&mycompletion);
+         pr_info("haha, i get the message\n");
+         break;
+      }
+      case 1: {
+         pr_info("complete\n");
+         complete(&mycompletion);
+         break;
+      }
+      default: {
+         pr_info("default\n");
+      }
+      }
+      return 0;
+   }
+
+   static const struct file_operations hello_fops = {
+      .owner      = THIS_MODULE,
+      .open       = hello_open,
+      .read       = hello_read,
+      .write      = hello_write,
+      .poll       = hello_poll,
+      .release    = hello_close,
+      .unlocked_ioctl = hello_ioctl,
+   };
+
+   static __init int hello_init(void) {
+      int err;
+      pr_info("hello driver init\n");
+      err = alloc_chrdev_region(&devid, 0, 1, "hello");
+      if (err != 0) {
+         return err;
+      }
+      cdev_init(&hello_cdev, &hello_fops);
+      cdev_add(&hello_cdev, devid, 1);
+      // 创建类，它会在 sys 目录下创建 /sys/class/hello 这个类
+      hello_cls = class_create(THIS_MODULE, "hello");
+      if (IS_ERR(hello_cls)) {
+         printk("can't create class\n");
+         return ERROR;
+      }
+      // 在 /sys/class/hello 下创建 hello 设备，然后 mdev 通过个自动创建 /dev/hello 这个设备节点
+      device_create(hello_cls, NULL, devid, NULL, "hello");
+      return 0;
+   }
+
+   static void __exit hello_exit(void) {
+      pr_info("hello driver exit\n");
+      device_destroy(hello_cls, devid);
+      class_destroy(hello_cls);
+      cdev_del(&hello_cdev);
+      unregister_chrdev_region(devid, 1);
+   }
+   module_init(hello_init);
+   module_exit(hello_exit);
+   MODULE_LICENSE("GPL");
+   ```
+   - [ ] kfifo
+   - [ ] ioctl 相关内容
+   - [ ] “mdev 通过个自动创建 /dev/hello 这个设备节点”，mdev 是根据 /sys/class/ 下的设备文件来创建 /dev 下的设备节点？
+   应用程序
+   ```c
+   #include <...>
+
+   static void *write01(void *ptr) {
+      int fd = open("/dev/hello", O_RDWR, O_NONBLOCK);
+      if (fd < 0) {
+         perror("open");
+         return NULL;
+      }
+      printf("write start\n");
+      ioctl(fd, DELAY_CMD_0_WRITE, 100);
+      printf("write end\n");
+      close(fd);
+      return NULL;
+   }
+
+   static void *read01(void *ptr) {
+      int fd = open("/dev/hello", O_RDWR, O_NONBLOCK);
+      if (fd < 0) {
+         perror("open");
+         return NULL;
+      }
+      printf("read start\n");
+      ioctl(fd, DELAY_CMD_1_READ, 100);
+      printf("read end\n");
+      close(fd);
+      return NULL;
+   }
+
+   int main() {
+      pthread_t thread, thread2;
+      pthread_create(&thread, NULL, write01, NULL);
+      sleep(2);
+      pthread_create(&thread2, NULL, read01, NULL);
+      pthread_join(thread, NULL);
+      pthread_join(thread2, NULL);
+      printf("main exit\n");
+      return EXIT_SUCCESS;
+   }
+   ```
+   - 应用先发 0，再发 1，驱动中的 0 会先等 1 的完成量。
