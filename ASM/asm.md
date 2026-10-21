@@ -1,11 +1,84 @@
 # 汇编笔记
+
+## GNU 汇编
+> [GAS, GNU Assembler](https://sourceware.org/binutils/docs/as/index.html)
+> as.pdf
+
+1. `.type` - 声明符号类型
+   - 在 *GNU ARM* 汇编（*gas*）中，`.type` 和 `.size` 是 *ELF* 符号属性伪指令，用于向链接器（*ld*）和调试器描述符号的性质与范围。
+   - 语法：
+    ```asm
+    .type <symbol>, #<type>
+    ```
+    - 它把符号标记为 ELF 符号表中的特定类型，常见取值：
+
+    | 类型 | 含义 | 典型场景 |
+    |-----|-----|-----|
+    | `#object` | 数据对象（变量/结构体/常量表） | 定义 `struct proc_info_list`、`struct machine_desc` 等 |
+    | `#function` | 可执行函数 | 定义汇编函数入口 |
+    | `#notype` | 无特定类型 | 默认 |
+   - 示例代码
+    ```asm
+    /* arch/arm/mm/proc-v7.S */
+    .type __v7_proc_info, #object
+    __v7_proc_info:
+        .long   0x000f0000      @ CPU ID mask
+        .long   0x000f0000      @ CPU ID value
+        .long   PMD_TYPE_SECT | \
+                PMD_SECT_AP_WRITE | \
+                PMD_SECT_AP_READ | \
+                PMD_FLAGS
+        .long   MMU_FLAGS
+        ...
+    .size __v7_proc_info, . - __v7_proc_info
+    ```
+
+2. `.size` - 声明符号大小
+   - 语法：
+    ```asm
+    .size <symbol>, <expression>
+    ```
+   - 通常配合 `.`（当前地址计数器）使用：
+    ```asm
+    .size __v7_proc_info, . - __v7_proc_info
+    ```
+    - 含义：该符号占用的字节数 = 当前地址 − 符号起始地址。链接器据此填充 *ELF* 符号表的 `st_size` 字段。
+
+3. 宏定义
+   - *macro* 格式：
+       ```asm
+       .macro 宏名 参数名列表   @伪指令.macro定义一个宏
+       指令序列
+       .endm                   @.endm表示宏结束
+       ```
+   - *define* 格式
+       ```asm
+       #define 标识符 值
+       ```
+
+## ARM 汇编
+> [Linux GNU ARM 汇编语法指南](https://softool.cn/read/gnu_arm_assembly_syntax_guide/macro.html)
+
+1. *CPS* 指令
+   > 5.6.3 PSR modification: In a privileged mode the Change Processor State(CPS) instruction can be used to directly modify the mode and interrupt-enable or disable (I and F) bits in the CPSR.
+   
+   补充：也可以使用 *MRS、MSR* 指令通过读、修改、写回的方式修改 *CPSR* 寄存器的 *M[4:0]*，从而让 *CPU* 进入不同的模式。
+
+2. *WFI* 和 *WFE* 指令
+    > [ARM hint instruction-WFI(Wait For Interrupt)指令详解](https://blog.csdn.net/luolaihua2018/article/details/126773265)
+
+3. 内存屏障指令
+    > [ARM基础(6)：内存屏障指令之DMB、DSB和ISB详解](https://blog.csdn.net/tilblackout/article/details/131949061)
+    > [ARM64中的内存屏障指令（DMB,DSB,ISB）](https://zhuanlan.zhihu.com/p/601037646)
+   - `DMB`
+   - `DSB`
+   - `ISB`
+
+## 内联汇编
 现代编译器已经足够优秀，大部分的 C 代码转成汇编码后，效率都很高。但是，有些使用汇编代码的情况：
 - 特殊的算法需要手工优化，这时就需要手写汇编代码；
 - 有时需要调用特殊的汇编指令，比如使用 `ldrex` 和 `strex` 实现互斥访问；
 
-## ATPCS 规则
-
-## 内联汇编
 1. 反汇编：
 2. 单独汇编文件 `add.S`
     ```asm
@@ -97,7 +170,7 @@
         }
         ```
 5. 关于输出操作数的约束修饰 `&` 的说明
-   - 编译器可能会对输入操作数和输入操作数使用同一个寄存器（`add r3, r2` 中输出使用的寄存器为 `r3`，一个输入也使用了 `r3` 寄存器），如果在返回结果之前继续操作这个寄存器会导致返回错误的结果。
+   - 编译器可能会对输出操作数和输入操作数使用同一个寄存器（`add r3, r2` 中输出使用的寄存器为 `r3`，一个输入也使用了 `r3` 寄存器），如果在返回结果之前继续操作这个寄存器会导致返回错误的结果。
    - 解决方式，明确告诉编译器分配单独的寄存器，这可以通过修饰符 `&` 进行说明：
     ```c
     int add(int a, int b) {
@@ -115,6 +188,10 @@
     ```
 
 ## 参考
+### ARM 汇编指令
+1. ARM Cortex-A(armV7)编程手册V4.0
+
+### 内联汇编
 1. 韦东山-驱动大全
 2. [GNU C 扩展汇编](https://gcc.gnu.org/onlinedocs/gcc/Extended-Asm.html)
 3. [ARM GCC 内嵌（inline）汇编手册](http://blog.chinaunix.net/uid-20543672-id-3194385.html)
