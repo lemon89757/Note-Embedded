@@ -717,11 +717,11 @@ static inline struct rq *context_switch(struct rq *rq, struct task_struct *prev,
 
 4. 如果当前进程也是内核线程，则将其 `task_struct->active_mm` 重新置为 `NULL`，同时通过就绪队列 `rq->prev_mm` 保存这部分信息
 
-5. `switch_to()`: 该函数执行完成后切换到下一个进程运行，同时它将当前进程在 `context_switch()` 内的局部变量 `prev` 重新设置，让其指向将当前进程换下去的那个进程。具体信息见笔记：`Linux/Arch/arm.md`
+5. `switch_to()`: 该函数执行完成后切换到下一个进程运行，同时它将当前进程在 `context_switch()` 内的局部变量 `prev` 重新设置，让其指向切换到当前进程的前一个进程。具体信息见笔记：`Linux/Arch/arm.md`
 
 6. `barrier()`：避免编译器重排序优化
 
-7. `finish_task_switch()`: 当上下文切换完成后，当前进程便失去了对 *CPU* 的使用权。当其再次恢复运行时，需要完成切换工作后的收尾处理（注意，是新进程在替旧进程做清理。这里是指切换到当前进程时的收尾工作，而不是上一次当前进程切换出去后，因为切换出去后 *CPU* 的任务执行流程就不在当前进程上了，这里的 `prev` 指向上一次将当前进程换下去的那个进程）。
+7. `finish_task_switch()`: 当上下文切换完成后，当前进程便失去了对 *CPU* 的使用权。当其再次恢复运行时，需要完成切换工作后的收尾处理（注意，是新进程在替旧进程做清理。这里是指切换到当前进程时的收尾工作，而不是上一次当前进程切换出去后。因为切换出去后 *CPU* 的任务执行流程就不在当前进程上了。这里的 `prev` 指向切换到当前进程的前一个进程）。
     ```c
     // version: 4.1.15
     // kernel/sched/core.c
@@ -797,3 +797,9 @@ static inline struct rq *context_switch(struct rq *rq, struct task_struct *prev,
     - `mmdrop()` 的作用是释放对 *mm_struct* 的一次引用。当引用计数归零时，它会负责销毁该地址空间及其相关的页表
     - 如果 `prev` 已经是被杀死的进程，则会尝试调用其对应调度类的 `task_dead()` 回调，并通过 `put_task_struct()` 减少其 *task_struct* 的引用计数，当计数归零时，释放对应资源（同上）
     - `task_nohz_task_switch()`: 需要选择配置项 `CONFIG_NO_HZ_FULL`，如果使能了相关内容，该函数试图重启 *tick*。
+
+补充：
+1. 对 `switch_to()` 之后，`prev` 指向的举例说明：
+   - 如果进程 *A* 切换到进程 *B*，*B* 再切换到 *C*，*C* 再切换回 *A*。此时 *A* 恢复执行后，继续从 `switch_to()` 开始运行（精确来说是从给 `prev` 赋值开始运行），此时在 *A* 的上下文中 `prev` 指向 *C*
+   - 进程 *A* 切换到进程 *B*，...（经过多个任务切换）, 从进程 *x* 切换回进程 *A*，此时 *A* 恢复执行后从 `switch_to()` 继续运行，在它的上下文中 `prev` 指向 *x*
+   - `finish_task_switch()` 需要这个正确的 `prev` 来完成：释放上一个任务的引用计数（`put_task_struct()`）等工作
