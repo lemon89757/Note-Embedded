@@ -1578,6 +1578,77 @@ const struct sched_class fair_sched_class = {
         ```
         - 总的来说，只要通过 `sd_flags` 中设置了 `SD_BALANCE_WAKE`，则目标 *CPU* 是通过 `select_idle_sibling()` 获取的
       - 如果不是由唤醒触发的负载均衡，目标 *CPU* 通过 `find_idlest_cpu()` 获取，它返回一个 `p` 允许在上面运行的 *CPU*，这个 *CPU* 要么是 *idle* 的，要么是这些 *CPU* 中负载最小的（这里的负载指的是平均负载，即 `rq->cfs.runnable_load_avg`）
+    1. `cfs_rq->runnable_load_avg` 的更新
+        - 实体入队时更新 `enqueue_entity_load_avg()`
+            ```c
+            // version: 4.1.15
+            // kernel/sched/fair.c
+            cfs_rq->runnable_load_avg += se->avg.load_avg_contrib;
+            ```
+        - 实体出队时更新 `dequeue_entity_load_avg()`
+            ```c
+            // version: 4.1.15
+            // kernel/sched/fair.c
+            cfs_rq->runnable_load_avg -= se->avg.load_avg_contrib;
+            ```
+        - *cfs rq* 上实体的负载平均值更新时更新 `update_entity_load_avg()`
+            ```c
+            // version: 4.1.15
+            // kernel/sched/fair.c
+            /* Update a sched_entity's runnable average */
+            static inline void update_entity_load_avg(struct sched_entity *se,
+                                int update_cfs_rq)
+            {
+                struct cfs_rq *cfs_rq = cfs_rq_of(se);
+                long contrib_delta, utilization_delta;
+                int cpu = cpu_of(rq_of(cfs_rq));
+                u64 now;
+
+                /*
+                * For a group entity we need to use their owned cfs_rq_clock_task() in
+                * case they are the parent of a throttled hierarchy.
+                */
+                if (entity_is_task(se))
+                    now = cfs_rq_clock_task(cfs_rq);
+                else
+                    now = cfs_rq_clock_task(group_cfs_rq(se));
+
+                if (!__update_entity_runnable_avg(now, cpu, &se->avg, se->on_rq,
+                                cfs_rq->curr == se))
+                    return;
+
+                contrib_delta = __update_entity_load_avg_contrib(se);
+                utilization_delta = __update_entity_utilization_avg_contrib(se);
+
+                if (!update_cfs_rq)
+                    return;
+
+                if (se->on_rq) {
+                    cfs_rq->runnable_load_avg += contrib_delta;
+                    cfs_rq->utilization_load_avg += utilization_delta;
+                } else {
+                    subtract_blocked_load_contrib(cfs_rq, -contrib_delta);
+                }
+            }
+            ```
+            - `__update_entity_load_avg_contrib()` 函数计算负载平均值的基本原理：
+              - 整体的计算公式是：`load_avg = u_0 + u_1*y + u_2*y^2 + ... [re-labeling u_i --> u_{i+1}]`，其中 `u_i` 表示第前 *i* 个 *period* 内的（可）运行时间；`y` 表示衰减因子，且具有 `y^32 = 0.5` 的关系
+              - 将 *period* 按 *1ms* 长度分段。不过在代码实现时，将 *ms <-> us <-> ns* 间的转换关系用 `2^10 = 1024` 来近似
+              - 负载平均值通过两个数值来记录：实体处于可运行状态的平均值（`se->avg.runnable_avg_sum`）和实体真正得到运行的平均值（`se->avg.running_avg_sum`）。另外，还通过 `se->agv.avg_period` 来记录未满一个 *period* 所经过的时间。它们的更新都满足上述计算公式。不过，在计算每个 *period* 对 `se->avg.running_avg_sum` 的贡献值时，还会乘上一个比例因子，该因子与 `arch_scale_freq_capacity()` 和 `SCHED_CAPACITY_SHIFT` 有关
+              - 从 *rq* 上获取的时间值以 *ns* 为单位，在函数中首先会判断：与前一次负载平均值更新时间（记录在 `se->last_runnable_update`）比较，是否已经过去有 *1ms*。只有超过 *1ms* 才会继续后面的更新操作
+              - 更新负载平均值的更新时间、滚动更新（`decay_load()` + `__compute_runnable_contrib`）若干个完整 *period* 和当前非整 *period* 时间内对平均负载的贡献。对跨过的完整 *period* 做衰减时，会假设这些跨过的周期内实体一直是可以运行的
+              - 结合计算公式可知，随着时间的推移，距离当前越久远的负载值占比负载均值越小，当前的负载情况占有较大的比例
+              - 返回值情况：如果过了完整 *period*，返回 1；否则，返回 0。即在该函数中是否涉及到了衰减计算
+            - 通过 `__update_entity_load_avg_contrib()` 计算当前实体负载对 *cfs rq* 的 `runnable_load_avg` 的贡献值
+              - 实体 `se` 的贡献值记录在 `se->avg.load_avg_contrib` 中
+              - 首先，记录上一次的贡献值
+              - 通过 `__update_task_entity_contrib()` 更新的贡献值，它与 `se->avg.runnable_avg_sum` 以及 `se->load.weight` 成正比，与 `se->agv.avg_period + 1` 成反比
+              - 最后 `update_entity_load_avg_contrib()` 的返回值是新贡献值与旧贡献值之差。
+            - 综上，得到如下推论：
+              - 如果实体的负载均值减小，会导致 *cfs rq* 的可运行负载均值减小；反之亦然
+              - 权重大的实体对 *cfs rq* 的可运行负载均值影响更大
+              - 实体在当前 *period* 周期已经运行的时间越长，则它的负载贡献值越小
+              - 如果两个 *cfs rq* 上面的可运行实体数量一致，则具体较大权重的 *cfs rq* 的可运行负载均值更大
 
 2. `migrate_task_rq_fair()` - `migrate_task_rq()`
     ```c
