@@ -2,10 +2,34 @@
 ## 目录结构
 
 ## 编译
-1. 编译全部
-2. 单独编译内核
-3. 单独编译模块
-4. 单独编译设备树
+1. 配置
+  ```bash
+  make xxx_defconfig
+  ```
+2. 编译全部
+  ```bash
+  make 
+  # or
+  make all
+  ```
+3. 单独编译内核
+  ```bash
+  make zImage
+  ```
+4. 单独编译模块
+  ```bash
+  make modules
+  ```
+5. 单独编译设备树
+  ```bash
+  make dtbs
+  ```
+6. 清除编译信息
+  ```bash
+  make clean
+  # 彻底清除，删除配置文件等
+  make distclean
+  ```
 
 ## Makefile 解析
 ### 配置-makef xxx_defconfig
@@ -14,6 +38,23 @@
 
 ## 映像文件
 *vmlinux, Image, zImage* 和 *uImage*
+
+- *vmlinux* 
+  - 是 *ELF* 格式的文件，但是在实际中不会使用，而是使用 *zImage* 或 *uImage* 这样的 *Linux* 内核镜像文件
+  - 是编译出来的最原始的内核文件，是未压缩的
+
+- *Image* 
+  - 是 *Linux* 内核镜像文件，但是 *Image* 仅包含可执行的二进制数据
+  - *Image* 就是使用 *objcopy* 取消掉 *vmlinux* 中的一些信息，比如符号表什么的
+  - 是没有压缩过的
+  - 保存在 `arch/arm/boot` 目录下
+
+- *zImage* 
+  - 是经过 *gzip* 压缩后的 *Image*
+
+- *uImage* 
+  - 是老版本 *uboot* 专用的镜像文件
+  - *uImage* 是在 *zImage* 前面加了一个长度为 64 字节的“头”，这个头信息描述了该镜像文件的类型、加载位置、生成时间、大小等信息
 
 ## 链接脚本
 - 位于 `arch/arm/kernel/vmlinux.lds`
